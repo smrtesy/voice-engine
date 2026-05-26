@@ -24,4 +24,7 @@ ENV PYTHONPATH=/app/src
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-CMD ["uvicorn", "voice_engine.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form (sh -c) so ${PORT} is expanded at runtime. Railway injects PORT;
+# locally it falls back to 8000. Exec form (the JSON-array CMD) does NOT expand
+# variables, which made uvicorn receive the literal string "$PORT".
+CMD ["sh", "-c", "uvicorn voice_engine.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
