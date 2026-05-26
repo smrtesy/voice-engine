@@ -156,9 +156,70 @@ class ResembleAdapter(TTSAdapter):
         voice_type: str = "pro",
         language: str = "he",
     ) -> str:
-        raise NotImplementedError(
-            "Voice clones currently created via Resemble UI"
+        """
+        Create a voice clone in Resemble.
+
+        Two-step flow per Resemble API v2:
+          1. POST /voices          → returns voice {uuid}
+          2. POST /voices/{uuid}/recordings → multipart upload of the sample
+
+        Returns the voice uuid that can be used as voice_id in generate_*.
+        """
+        # Step 1: create the voice record
+        # voice_type "pro" → Resemble's "professional" tier (slower, higher quality)
+        # voice_type "rapid" → instant clone (lower quality, no training)
+        dataset = "professional" if voice_type == "pro" else "rapid"
+        create_payload = {
+            "name": name,
+            "dataset": dataset,
+            "consent": True,
+            # Resemble doesn't have a per-voice language field; we record it
+            # in our DB and pass it on every generate call.
+        }
+
+        try:
+            response = await self.client.post("/voices", json=create_payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            self._raise_for_status(e)
+
+        voice_uuid = response.json()["item"]["uuid"]
+        logger.info("resemble_voice_created", voice_uuid=voice_uuid, name=name)
+
+        # Step 2: upload the sample as a recording
+        with open(sample_path, "rb") as f:
+            audio_bytes = f.read()
+
+        # Multipart upload requires a different client (no JSON Content-Type).
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            headers={"Authorization": f"Token {self.api_key}"},
+            timeout=600.0,
+        ) as upload_client:
+            files = {
+                "file": (sample_path.name, audio_bytes, "audio/wav"),
+            }
+            data = {
+                "name": f"{name} sample",
+                "text": f"Voice sample for {name}",
+                "is_active": "true",
+            }
+            try:
+                upload_response = await upload_client.post(
+                    f"/voices/{voice_uuid}/recordings",
+                    files=files,
+                    data=data,
+                )
+                upload_response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                self._raise_for_status(e)
+
+        logger.info(
+            "resemble_voice_sample_uploaded",
+            voice_uuid=voice_uuid,
+            sample_size_bytes=len(audio_bytes),
         )
+        return voice_uuid
 
     async def delete_voice(self, voice_id: str) -> bool:
         response = await self.client.delete(f"/voices/{voice_id}")

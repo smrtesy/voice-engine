@@ -36,8 +36,11 @@ class ParseScriptRequest(BaseModel):
 
 
 class CreateVoiceRequest(BaseModel):
-    org_id: UUID
-    character_id: UUID
+    # org_id and character_id are smrtesy-side concepts. voice-engine just needs
+    # to clone the sample and return a voice_id — it doesn't persist anything,
+    # so these are optional and only used for log enrichment.
+    org_id: UUID | None = None
+    character_id: UUID | None = None
     sample_audio_url: HttpUrl
     voice_name: str
     voice_type: Literal["rapid", "pro"] = "pro"
