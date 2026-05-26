@@ -1,0 +1,31 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      SERVICE_ROLE: api
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+    command: uvicorn voice_engine.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./src:/app/src
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      SERVICE_ROLE: worker
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+    command: huey_consumer voice_engine.workers.huey_app.huey -w 2
+    volumes:
+      - ./src:/app/src
