@@ -307,6 +307,15 @@ class JobOrchestrator:
                 "cost": 0.0,
             }
 
+        # Model precedence (most specific wins):
+        #   1. character.resemble_model — per-character, UI-editable in
+        #      /voice/characters/[id]. New characters inherit the org's
+        #      default_resemble_model at creation time (smrtesy side).
+        #   2. settings.resemble_default_model — voice-engine env fallback,
+        #      only used when a character has no model set.
+        #   3. None — let Resemble pick its own default.
+        resolved_model = character.resemble_model or self.settings.resemble_default_model or None
+
         gen_req = GenerateRequest(
             text=line.text_for_tts,
             voice_id=character.resemble_voice_id,
@@ -319,7 +328,7 @@ class JobOrchestrator:
             sample_rate=self.settings.resemble_default_sample_rate,
             precision=self.settings.resemble_default_precision,
             use_hd=self.settings.resemble_default_use_hd,
-            model=self.settings.resemble_default_model or None,
+            model=resolved_model,
         )
 
         try:

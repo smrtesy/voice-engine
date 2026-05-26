@@ -48,6 +48,7 @@ class Character(BaseModel):
     display_name: str | None = None
     description: str | None = None
     resemble_voice_id: str | None = None
+    resemble_model: str | None = None  # per-character model override (UI-editable)
     chatterbox_sample_path: str | None = None
     voice_type: Literal["rapid", "pro"] = "pro"
     language: str = "he"

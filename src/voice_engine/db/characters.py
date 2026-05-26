@@ -46,6 +46,7 @@ class CharactersRepository:
             display_name=row.get("display_name"),
             description=row.get("description"),
             resemble_voice_id=row.get("resemble_voice_id"),
+            resemble_model=row.get("resemble_model"),
             chatterbox_sample_path=row.get("chatterbox_sample_path"),
             voice_type=row.get("voice_type", "pro"),
             language=row.get("language", "he"),
