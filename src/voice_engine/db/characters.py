@@ -1,4 +1,4 @@
-"""smrtvoice_characters table access. Skeleton."""
+"""smrtvoice_characters table access."""
 
 from uuid import UUID
 
@@ -20,6 +20,34 @@ class CharactersRepository:
             .maybe_single()
             .execute()
         )
-        if not result.data:
+        if not result or not result.data:
             return None
-        return Character(**result.data)
+        return self._to_model(result.data)
+
+    async def get(self, character_id: UUID) -> Character | None:
+        client = get_supabase()
+        result = (
+            client.table(self.TABLE)
+            .select("*")
+            .eq("id", str(character_id))
+            .maybe_single()
+            .execute()
+        )
+        if not result or not result.data:
+            return None
+        return self._to_model(result.data)
+
+    @staticmethod
+    def _to_model(row: dict) -> Character:
+        return Character(
+            id=row["id"],
+            org_id=row["org_id"],
+            name=row["name"],
+            display_name=row.get("display_name"),
+            description=row.get("description"),
+            resemble_voice_id=row.get("resemble_voice_id"),
+            chatterbox_sample_path=row.get("chatterbox_sample_path"),
+            voice_type=row.get("voice_type", "pro"),
+            language=row.get("language", "he"),
+            is_active=row.get("is_active", True),
+        )

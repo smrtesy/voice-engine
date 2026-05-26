@@ -19,6 +19,17 @@ class StorageManager:
         settings = get_settings()
         self.bucket = settings.supabase_storage_bucket
 
+    def _upload_bytes(self, storage_path: str, data: bytes, content_type: str) -> str:
+        """Synchronous helper used by orchestrator to push input segments."""
+        client = get_supabase()
+        client.storage.from_(self.bucket).upload(
+            path=storage_path,
+            file=data,
+            file_options={"content-type": content_type, "x-upsert": "true"},
+        )
+        logger.info("storage_upload", path=storage_path, size_bytes=len(data))
+        return storage_path
+
     async def upload_audio(
         self,
         local_path: Path,
@@ -28,19 +39,9 @@ class StorageManager:
     ) -> str:
         """Upload an audio file. Returns the storage path."""
         storage_path = f"{org_id}/projects/{project_id}/output/{filename}"
-        client = get_supabase()
-
         with open(local_path, "rb") as f:
             data = f.read()
-
-        client.storage.from_(self.bucket).upload(
-            path=storage_path,
-            file=data,
-            file_options={"content-type": "audio/wav", "x-upsert": "true"},
-        )
-
-        logger.info("audio_uploaded", storage_path=storage_path, size_bytes=len(data))
-        return storage_path
+        return self._upload_bytes(storage_path, data, "audio/wav")
 
     async def create_signed_url(
         self, storage_path: str, expires_in_seconds: int = 3600
