@@ -60,6 +60,8 @@ class JobOrchestrator:
         self.chars_repo = CharactersRepository()
         self.projects_repo = ProjectsRepository()
         self.storage = StorageManager()
+        # Preprocessor is built per-job in process_job so it can honor the
+        # request's per-org llm_model override.
         self.preprocessor = LLMPreprocessor()
         self.splitter = AudioSplitter()
         self.webhook = WebhookSender()
@@ -69,6 +71,10 @@ class JobOrchestrator:
     ) -> JobResult:
         started_at = datetime.now(timezone.utc)
         logger.info("job_started", job_id=str(job_id), mode=request.mode.value)
+
+        # Rebuild the preprocessor with this org's model override (if any).
+        if request.llm_model:
+            self.preprocessor = LLMPreprocessor(model_override=request.llm_model)
 
         await self._set_running(job_id, started_at)
         await self.webhook.send_job_started(request.org_id, request.project_id, job_id)

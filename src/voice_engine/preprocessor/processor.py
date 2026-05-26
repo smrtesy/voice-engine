@@ -22,10 +22,11 @@ class LLMPreprocessor:
     - Produce English prompt for Resemble
     """
 
-    def __init__(self) -> None:
+    def __init__(self, model_override: str | None = None) -> None:
         settings = get_settings()
         self.client = get_anthropic_client()
-        self.model = settings.llm_model
+        # Per-org model wins; falls back to the LLM_MODEL env default.
+        self.model = model_override or settings.llm_model
         self.max_tokens = settings.llm_max_tokens
         self.temperature = settings.llm_temperature
 

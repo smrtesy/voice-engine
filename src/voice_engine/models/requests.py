@@ -22,6 +22,9 @@ class CreateJobRequest(BaseModel):
 
     input_audio_url: HttpUrl | None = None
 
+    # Per-org Claude model for preprocessing. None → use LLM_MODEL env default.
+    llm_model: str | None = None
+
     characters: list[dict] = []
 
     callback_url: HttpUrl | None = None
