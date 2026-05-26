@@ -240,6 +240,12 @@ class JobOrchestrator:
 
         async def process_one(idx: int, line: ProcessedLine) -> dict:
             async with semaphore:
+                # Index-based segment mapping. If silence detection produced
+                # fewer segments than lines (under-split), trailing lines get
+                # None and the adapter falls back to TTS for them. If it
+                # produced MORE segments than lines (over-split), extras are
+                # silently ignored — an editor with extra pauses doesn't
+                # break the job. Both cases are logged by AudioSplitter.
                 segment = (
                     audio_segments[idx]
                     if audio_segments and idx < len(audio_segments)

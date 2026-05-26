@@ -75,6 +75,11 @@ async def clone_voice(request: CreateVoiceRequest) -> VoiceCreatedResponse:
             ) from e
 
     # Resemble pro voices take ~minutes to train; rapid is instant.
+    # We do NOT poll Resemble for training status here — the caller (smrtesy
+    # UI) should either re-fetch via list_voices on demand or set up a
+    # Resemble webhook for training completion. The "training" return value
+    # is a hint, not a live status — once we add polling or webhook handling,
+    # update this comment.
     is_rapid = request.voice_type == "rapid"
     return VoiceCreatedResponse(
         voice_id=voice_id,

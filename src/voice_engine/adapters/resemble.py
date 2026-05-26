@@ -164,6 +164,19 @@ class ResembleAdapter(TTSAdapter):
           2. POST /voices/{uuid}/recordings → multipart upload of the sample
 
         Returns the voice uuid that can be used as voice_id in generate_*.
+
+        NOTE: Multipart field shape (file/name/text/is_active) is built from
+        common Resemble v2 patterns and should be verified on first real run
+        against https://docs.resemble.ai/. If Resemble rejects the upload,
+        check the field names. is_active is passed as the string "true"
+        because httpx's multipart API requires string values for non-file
+        form fields — that matches what other Resemble integrations do but
+        flag this if the API ever stops accepting it.
+
+        Pro voices train asynchronously (~minutes); rapid clones are instant.
+        We don't poll training status here — callers can either treat
+        "training" as a hint and re-check via list_voices, or configure a
+        Resemble webhook for training completion.
         """
         # Step 1: create the voice record
         # voice_type "pro" → Resemble's "professional" tier (slower, higher quality)
