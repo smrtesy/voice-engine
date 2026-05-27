@@ -10,8 +10,35 @@ from voice_engine.dictionaries.hebrew_names import HEBREW_NAME_FIXES
 from voice_engine.models.domain import Character, ProcessedLine, ScriptLine
 from voice_engine.preprocessor.llm_client import get_anthropic_client
 from voice_engine.preprocessor.prompts import build_system_prompt, build_user_message
+from voice_engine.storage.supabase_client import get_supabase
 
 logger = structlog.get_logger()
+
+
+def _log_ai_usage(model: str, usage: object, ref_id: str | None = None) -> None:
+    """Write one row to the unified ai_usage ledger. Best-effort: never raises."""
+    try:
+        in_tok = getattr(usage, "input_tokens", 0) or 0
+        out_tok = getattr(usage, "output_tokens", 0) or 0
+        rate_in, rate_out = (
+            (3.0, 15.0) if "sonnet" in model
+            else (15.0, 75.0) if "opus" in model
+            else (0.8, 4.0)
+        )
+        cost = (in_tok * rate_in + out_tok * rate_out) / 1_000_000
+        get_supabase().table("ai_usage").insert(
+            {
+                "provider": "anthropic",
+                "component": "voice_engine.preprocess",
+                "model": model,
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
+                "cost_usd": cost,
+                "ref_id": ref_id,
+            }
+        ).execute()
+    except Exception as e:  # noqa: BLE001 — ledger must never break generation
+        logger.warning("ai_usage_log_failed", error=str(e))
 
 
 class LLMPreprocessor:
@@ -89,6 +116,8 @@ class LLMPreprocessor:
             emotion=llm_output.get("emotion"),
             tokens_used=(response.usage.input_tokens + response.usage.output_tokens),
         )
+
+        _log_ai_usage(self.model, response.usage, ref_id=str(line.line_number))
 
         return ProcessedLine(
             **line.model_dump(),
