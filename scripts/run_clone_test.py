@@ -16,7 +16,9 @@ What it does:
 
 Requires:
   * RESEMBLE_API_KEY in the environment (a real Flex-plan key with credits)
-  * the alignment deps: pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio && pip install soundfile uroman python-docx
+  * the alignment deps (CPU wheels):
+      pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio
+      pip install soundfile uroman python-docx
 
 Usage:
   export RESEMBLE_API_KEY=...   # your real key
