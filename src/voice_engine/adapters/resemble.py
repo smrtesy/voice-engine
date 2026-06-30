@@ -267,6 +267,9 @@ class ResembleAdapter(TTSAdapter):
         payload: dict = {
             "name": name[:256],
             "voice_type": voice_type,
+            # Without this, Resemble defaults the voice to en-US. Send it so a
+            # Hebrew clone is actually created as Hebrew.
+            "language": language,
             "consent": True,
         }
         if dataset_url:
@@ -297,6 +300,7 @@ class ResembleAdapter(TTSAdapter):
         emotion: str = "neutral",
         name: str | None = None,
         is_active: bool = True,
+        language: str = "he",
     ) -> dict:
         """
         Upload one recording (multipart) to a voice, tagged with an emotion.
@@ -304,6 +308,7 @@ class ResembleAdapter(TTSAdapter):
         Used by the individual-upload path, which preserves the per-sentence
         emotion labels the dataset ZIP can't carry. is_active is sent as the
         string "true"/"false" because multipart form fields must be strings.
+        The recording text is capped by Resemble at 1024 chars; we truncate.
         """
         headers = {"Authorization": f"Token {self.api_key}"}
         with open(file_path, "rb") as f:
@@ -314,8 +319,9 @@ class ResembleAdapter(TTSAdapter):
         ) as upload_client:
             files = {"file": (Path(file_path).name, audio_bytes, "audio/wav")}
             data = {
-                "text": text,
+                "text": text[:1024],
                 "emotion": emotion,
+                "language": language,
                 "is_active": str(is_active).lower(),
             }
             if name:
@@ -361,7 +367,8 @@ class ResembleAdapter(TTSAdapter):
 
     async def delete_voice(self, voice_id: str) -> bool:
         response = await self.client.delete(f"/voices/{voice_id}")
-        return response.status_code == 204
+        # Resemble returns 200 on a successful delete (not 204).
+        return response.status_code in (200, 204)
 
     def _raise_for_status(self, error: httpx.HTTPStatusError) -> None:
         status_code = error.response.status_code
