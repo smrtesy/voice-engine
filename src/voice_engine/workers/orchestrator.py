@@ -28,6 +28,7 @@ import structlog
 
 from voice_engine.adapters.base import GenerateRequest
 from voice_engine.adapters.factory import get_adapter
+from voice_engine.audio.postprocess import postprocess_wav
 from voice_engine.audio.splitter import AudioSplitter
 from voice_engine.config import get_settings
 from voice_engine.db.characters import CharactersRepository
@@ -380,6 +381,14 @@ class JobOrchestrator:
                 response.raise_for_status()
                 local_path.write_bytes(response.content)
 
+            # Optional post-production: gentle compressor + WSOLA time-stretch.
+            if request.postprocess_enabled:
+                postprocess_wav(
+                    local_path,
+                    compress_enabled=request.postprocess_compress,
+                    speed=request.postprocess_speed,
+                )
+
             storage_path = await self.storage.upload_audio(
                 local_path,
                 request.org_id,
@@ -398,6 +407,13 @@ class JobOrchestrator:
             "pronunciation_subs": line.pronunciation_subs,
             "sample_rate": gen_req.sample_rate,
             "mode": request.mode.value,
+            "postprocess": {
+                "enabled": request.postprocess_enabled,
+                "compress": request.postprocess_compress,
+                "speed": request.postprocess_speed,
+            }
+            if request.postprocess_enabled
+            else None,
         }
 
         await self.lines_repo.mark_completed(

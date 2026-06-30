@@ -36,6 +36,11 @@ class CreateJobRequest(BaseModel):
     # For regenerate_line: the specific script line numbers to re-render.
     line_numbers: list[int] = []
 
+    # Post-production DSP on each rendered clip (off by default).
+    postprocess_enabled: bool = False
+    postprocess_compress: bool = True
+    postprocess_speed: float = 1.0
+
     callback_url: HttpUrl | None = None
     callback_secret: str | None = None
 
