@@ -144,8 +144,11 @@ class ResembleAdapter(TTSAdapter):
             adapter_metadata={"clip_id": data["item"]["uuid"]},
         )
 
-    async def list_voices(self) -> list[dict]:
-        response = await self.client.get("/voices")
+    async def list_voices(self, page: int = 1, page_size: int = 100) -> list[dict]:
+        # The v2 API requires page >= 1; calling /voices without it returns 400.
+        response = await self.client.get(
+            "/voices", params={"page": page, "page_size": page_size}
+        )
         response.raise_for_status()
         return response.json().get("items", [])
 
@@ -258,7 +261,14 @@ class ResembleAdapter(TTSAdapter):
 
         Returns the raw Resemble ``item`` dict (includes ``uuid``).
         """
-        payload: dict = {"name": name[:256], "consent": True}
+        # The live v2 API returns voice_type ("rapid"/"professional") on each
+        # voice, so that's the create field too. Send it explicitly — otherwise
+        # a professional clone won't actually be created.
+        payload: dict = {
+            "name": name[:256],
+            "voice_type": voice_type,
+            "consent": True,
+        }
         if dataset_url:
             payload["dataset_url"] = dataset_url
         if callback_uri:

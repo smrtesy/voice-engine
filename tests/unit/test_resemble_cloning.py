@@ -57,6 +57,7 @@ async def test_create_voice_includes_dataset_url():
 
     payload = adapter.client.post.call_args[1]["json"]
     assert payload["name"] == "Dovi"
+    assert payload["voice_type"] == "professional"  # default tier
     assert payload["dataset_url"] == "https://x/d.zip"
     assert payload["callback_uri"] == "https://cb"
     assert payload["consent"] is True
