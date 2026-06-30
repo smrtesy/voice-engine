@@ -251,9 +251,10 @@ class ResembleAdapter(TTSAdapter):
         caller uploads recordings then calls :meth:`build_voice`.
 
         NOTE: the exact create payload (field names for the voice tier) is not
-        100% verified against Resemble's current API — this whole path also
-        requires a Business plan, so verify on the first real run. The tier
-        field and dataset_url are isolated here so they're easy to adjust.
+        100% verified against Resemble's current API, so verify on the first real
+        run. Professional cloning is available on the Flex pay-as-you-go plan
+        (no Business tier as of 2026). The tier field and dataset_url are isolated
+        here so they're easy to adjust.
 
         Returns the raw Resemble ``item`` dict (includes ``uuid``).
         """

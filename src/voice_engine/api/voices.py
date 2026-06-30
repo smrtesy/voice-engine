@@ -24,9 +24,15 @@ logger = structlog.get_logger()
 
 router = APIRouter(dependencies=[Depends(verify_api_key)])
 
-_BUSINESS_PLAN_HINT = (
-    "Voice cloning requires a Resemble Business plan or higher. "
-    "Upgrade at https://app.resemble.ai/account/billing"
+# As of 2026 Resemble retired subscription tiers: professional voice cloning is
+# available on the pay-as-you-go Flex plan (~$5/mo per pro voice + per-second
+# synthesis). A 403 here therefore usually means an account/credits/permissions
+# issue, not a missing plan — surface a hint that points at the real cause.
+_CLONE_403_HINT = (
+    "Resemble returned 403 for voice cloning. Professional cloning is available "
+    "on the Flex (pay-as-you-go) plan, so this usually means missing credits or "
+    "API permissions on the account, not a plan upgrade. Check "
+    "https://app.resemble.ai/account/billing"
 )
 
 
@@ -114,7 +120,7 @@ async def clone_voice_professional(
     callback_uri when training finishes. Poll progress with GET
     /voices/{voice_uuid}/status once the voice exists.
 
-    Requires a Resemble Business plan.
+    Available on the Resemble Flex (pay-as-you-go) plan; no Business tier needed.
     """
     from voice_engine.workers.tasks import enqueue_pro_clone_job
 
@@ -134,7 +140,7 @@ async def clone_voice_from_zip(request: CreateZipCloneRequest) -> CloneResponse:
     """
     Create a professional voice clone from a ready Resemble dataset ZIP URL.
 
-    No alignment — runs inline. Requires a Resemble Business plan.
+    No alignment — runs inline. Available on the Resemble Flex plan.
     """
     from voice_engine.cloning.clone_manager import CloneManager
 
@@ -142,7 +148,7 @@ async def clone_voice_from_zip(request: CreateZipCloneRequest) -> CloneResponse:
         return await CloneManager().create_from_zip(request)
     except ResembleAuthError as e:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=f"{_BUSINESS_PLAN_HINT} ({e})"
+            status_code=status.HTTP_403_FORBIDDEN, detail=f"{_CLONE_403_HINT} ({e})"
         ) from e
     except (ValueError, NotImplementedError) as e:
         raise HTTPException(
@@ -168,7 +174,7 @@ async def get_voice_status(voice_uuid: str) -> dict:
         return await adapter.get_voice_status(voice_uuid)
     except ResembleAuthError as e:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=f"{_BUSINESS_PLAN_HINT} ({e})"
+            status_code=status.HTTP_403_FORBIDDEN, detail=f"{_CLONE_403_HINT} ({e})"
         ) from e
     except Exception as e:
         raise HTTPException(

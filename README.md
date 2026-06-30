@@ -89,7 +89,10 @@ Endpoints (under `/voices`):
 Module: `src/voice_engine/cloning/` — `script_parser`, `aligner` (MMS forced
 alignment), `dataset_builder` (cut + ZIP), `clone_manager` (orchestration).
 
-> **Requires a Resemble Business plan.** The cloning API returns 403 otherwise.
+> **Plan note:** As of 2026 Resemble retired subscription tiers — professional
+> cloning is available on the pay-as-you-go **Flex** plan (~$5/mo per pro voice +
+> per-second synthesis), no Business/Enterprise tier required. A 403 from the
+> cloning API usually means missing credits or API permissions, not a plan.
 > Forced alignment is CPU-heavy and runs only in the worker; the worker image
 > installs the ML stack via `--build-arg INSTALL_ALIGNMENT=true` (CPU torch
 > wheels). The API image stays lean — `cloning/aligner.py` imports torch lazily.
