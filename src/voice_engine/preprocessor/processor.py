@@ -7,12 +7,29 @@ import structlog
 from voice_engine.config import get_settings
 from voice_engine.dictionaries.emotion_directions import EMOTION_DIRECTIONS
 from voice_engine.dictionaries.hebrew_names import HEBREW_NAME_FIXES
+from voice_engine.dictionaries.resemble_tags import compose_body, tags_for_emotion
+from voice_engine.lib.hebrew_utils import strip_niqqud
 from voice_engine.models.domain import Character, ProcessedLine, ScriptLine
 from voice_engine.preprocessor.llm_client import get_anthropic_client
 from voice_engine.preprocessor.prompts import build_system_prompt, build_user_message
 from voice_engine.storage.supabase_client import get_supabase
 
 logger = structlog.get_logger()
+
+
+def _emotion_from_directions(directions: list[str]) -> str | None:
+    """Return the emotion label for the first recognised direction keyword.
+
+    The script ALWAYS wins: if a stage direction maps to a known emotion we use
+    it regardless of what the LLM inferred. Longest keyword first so
+    "מגמגם מתוך לחץ" beats "מגמגם".
+    """
+    keywords = sorted(EMOTION_DIRECTIONS.keys(), key=len, reverse=True)
+    for direction in directions:
+        for kw in keywords:
+            if kw in direction:
+                return EMOTION_DIRECTIONS[kw]["emotion"]
+    return None
 
 
 def _log_ai_usage(model: str, usage: object, ref_id: str | None = None) -> None:
@@ -104,16 +121,37 @@ class LLMPreprocessor:
             llm_output = {
                 "text_for_tts": line.text_clean,
                 "emotion": "neutral",
-                "exaggeration": 0.5,
-                "pitch": 0.0,
-                "speaking_pace": "normal",
+                "emotion_source": "none",
                 "resemble_prompt": None,
             }
+
+        # Plain Hebrew, no niqqud — Ultra vocalizes internally (niqqud harms it).
+        text_for_tts = strip_niqqud(llm_output.get("text_for_tts") or line.text_clean).strip()
+
+        # The script ALWAYS wins: a recognised stage direction overrides the
+        # LLM's emotion. Otherwise use the LLM's emotion (source "llm"), or
+        # neutral with no tags.
+        script_emotion = _emotion_from_directions(line.directions)
+        if script_emotion:
+            emotion = script_emotion
+            emotion_source = "script"
+        else:
+            emotion = (llm_output.get("emotion") or "neutral").strip().lower()
+            emotion_source = (llm_output.get("emotion_source") or "llm").strip().lower()
+            if emotion in ("", "neutral"):
+                emotion, emotion_source = "neutral", "none"
+            elif emotion_source not in ("llm", "none"):
+                emotion_source = "llm"
+
+        tags = tags_for_emotion(emotion, emotion_source)
+        tts_body = compose_body(text_for_tts, tags)
 
         logger.info(
             "llm_line_processed",
             line_number=line.line_number,
-            emotion=llm_output.get("emotion"),
+            emotion=emotion,
+            emotion_source=emotion_source,
+            tags=[t["tag"] for t in tags],
             tokens_used=(response.usage.input_tokens + response.usage.output_tokens),
         )
 
@@ -122,12 +160,12 @@ class LLMPreprocessor:
         return ProcessedLine(
             **line.model_dump(),
             character_id=character.id,
-            text_for_tts=llm_output["text_for_tts"],
-            emotion=llm_output["emotion"],
+            text_for_tts=text_for_tts,
+            emotion=emotion,
+            emotion_source=emotion_source,
+            tags=tags,
+            tts_body=tts_body,
             resemble_prompt=llm_output.get("resemble_prompt"),
-            final_exaggeration=float(llm_output["exaggeration"]),
-            final_pitch=float(llm_output["pitch"]),
-            final_pace=llm_output["speaking_pace"],
         )
 
     async def process_batch(

@@ -104,9 +104,16 @@ class ProcessedLine(ScriptLine):
     emotion: str
     resemble_prompt: str | None = None
 
-    final_exaggeration: float
-    final_pitch: float
-    final_pace: Literal["slow", "normal", "fast"]
+    # resemble-ultra recipe: the body actually sent (text + embedded tags),
+    # the tags with their source, and where the emotion came from.
+    tts_body: str = ""
+    tags: list[dict] = []
+    emotion_source: Literal["script", "llm", "none"] = "llm"
+
+    # Legacy chatterbox/STS params. Ultra ignores these; kept with defaults.
+    final_exaggeration: float = 0.5
+    final_pitch: float = 0.0
+    final_pace: Literal["slow", "normal", "fast"] = "normal"
 
 
 class AudioFile(BaseModel):

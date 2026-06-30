@@ -27,10 +27,15 @@ class Settings(BaseSettings):
     # Resemble
     resemble_api_key: str
     resemble_api_base_url: str = "https://app.resemble.ai/api/v2"
+    # Synthesis is project-scoped: POST /projects/{uuid}/clips. Set this to the
+    # Resemble project that holds the cloned voices (e.g. "2b0383f7").
+    resemble_project_uuid: str = ""
     resemble_default_sample_rate: int = 48000
     resemble_default_precision: str = "PCM_24"
     resemble_default_use_hd: bool = True
-    resemble_default_model: str = "chatterbox"
+    # resemble-ultra is the tested Hebrew recipe: handles niqqud internally and
+    # supports emotion control via inline/wrapping tags in the clip body.
+    resemble_default_model: str = "resemble-ultra"
 
     # Anthropic
     anthropic_api_key: str

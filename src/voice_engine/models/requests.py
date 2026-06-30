@@ -15,10 +15,14 @@ class CreateJobRequest(BaseModel):
 
     job_type: Literal["parse_script", "generate_audio", "regenerate_line"]
     adapter: AdapterType = AdapterType.RESEMBLE
-    mode: GenerationMode = GenerationMode.STS
+    # resemble-ultra is a TTS recipe; default to TTS (STS is deprecated).
+    mode: GenerationMode = GenerationMode.TTS
 
     google_doc_id: str | None = None
     google_oauth_token: str | None = None
+    # Which language tab to read from the Google Doc. None → auto-detect Hebrew.
+    google_doc_tab_id: str | None = None
+    google_doc_tab_title: str | None = None
 
     input_audio_url: HttpUrl | None = None
 
@@ -26,6 +30,11 @@ class CreateJobRequest(BaseModel):
     llm_model: str | None = None
 
     characters: list[dict] = []
+
+    # Short program code (e.g. "BR1"); output files are "{code}_{line:03d}.wav".
+    code: str | None = None
+    # For regenerate_line: the specific script line numbers to re-render.
+    line_numbers: list[int] = []
 
     callback_url: HttpUrl | None = None
     callback_secret: str | None = None
@@ -36,6 +45,8 @@ class CreateJobRequest(BaseModel):
 class ParseScriptRequest(BaseModel):
     google_doc_id: str
     google_oauth_token: str | None = None
+    google_doc_tab_id: str | None = None
+    google_doc_tab_title: str | None = None
 
 
 class CreateVoiceRequest(BaseModel):
@@ -46,5 +57,7 @@ class CreateVoiceRequest(BaseModel):
     character_id: UUID | None = None
     sample_audio_url: HttpUrl
     voice_name: str
-    voice_type: Literal["rapid", "pro"] = "pro"
+    # Clones are always created rapid then upgraded to Ultra (the only path
+    # Resemble accepts); this field is kept for compatibility.
+    voice_type: Literal["rapid", "pro"] = "rapid"
     language: str = "he"

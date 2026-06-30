@@ -127,4 +127,25 @@ EMOTION_DIRECTIONS: dict[str, dict] = {
         "pace": "slow",
         "prompt_template": "Speak with reverent respect and warmth",
     },
+    "מקריאה": {
+        "emotion": "reading",
+        "exaggeration": 0.5,
+        "pitch_offset": 0,
+        "pace": "normal",
+        "prompt_template": "Read aloud clearly and steadily, as if reading from a page",
+    },
+    "מגמגם": {
+        "emotion": "nervous",
+        "exaggeration": 0.45,
+        "pitch_offset": 0,
+        "pace": "normal",
+        "prompt_template": "Speak hesitantly, stammering a little under pressure",
+    },
+    "מגמגם מתוך לחץ": {
+        "emotion": "nervous",
+        "exaggeration": 0.45,
+        "pitch_offset": 0,
+        "pace": "normal",
+        "prompt_template": "Speak hesitantly, stammering under stress",
+    },
 }

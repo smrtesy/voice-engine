@@ -14,10 +14,20 @@ class GenerateRequest:
     language: str = "he"
     output_path: Path | None = None
 
+    # The exact body sent to Resemble for resemble-ultra: the Hebrew text with
+    # emotion tags already injected (e.g. "<build-intensity>שלום</build-intensity>").
+    # When None the adapter falls back to `text`. See dictionaries/resemble_tags.py.
+    tts_body: str | None = None
+    # Emotion tags applied, each {tag, type: wrap|inline, source: script|llm}.
+    # Carried for transparency/logging only — the body already embeds them.
+    tags: list[dict] = field(default_factory=list)
+
     # STS-specific
     input_audio_url: str | None = None
 
-    # Voice control parameters
+    # Voice control parameters. NOTE: resemble-ultra largely ignores these
+    # (exaggeration/pitch/pace/prompt); emotion is driven by tags in tts_body.
+    # Kept for the legacy chatterbox/STS paths.
     exaggeration: float = 0.5
     pitch: float = 0.0
     speaking_pace: str = "normal"

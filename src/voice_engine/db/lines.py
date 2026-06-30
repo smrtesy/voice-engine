@@ -64,6 +64,9 @@ class LinesRepository:
                 if processed.is_pointed
                 else None,
                 "emotion": processed.emotion,
+                "emotion_source": processed.emotion_source,
+                "tts_body": processed.tts_body,
+                "tags": processed.tags,
                 "resemble_prompt": processed.resemble_prompt,
                 "final_exaggeration": processed.final_exaggeration,
                 "final_pitch": processed.final_pitch,
@@ -83,16 +86,39 @@ class LinesRepository:
         storage_path: str,
         duration_seconds: float,
         cost_usd: float,
+        resemble_request: dict | None = None,
     ) -> None:
         client = get_supabase()
-        client.table(self.TABLE).update(
-            {
-                "status": "completed",
-                "output_audio_path": storage_path,
-                "output_duration_seconds": duration_seconds,
-                "generation_cost_usd": cost_usd,
-            }
-        ).eq("project_id", str(project_id)).eq("line_number", line_number).execute()
+        fields: dict = {
+            "status": "completed",
+            "output_audio_path": storage_path,
+            "output_duration_seconds": duration_seconds,
+            "generation_cost_usd": cost_usd,
+            # Clear any prior redo flag — this render is the latest.
+            "redo_requested": False,
+        }
+        if resemble_request is not None:
+            fields["resemble_request"] = resemble_request
+        client.table(self.TABLE).update(fields).eq(
+            "project_id", str(project_id)
+        ).eq("line_number", line_number).execute()
+
+    async def get_lines_by_numbers(
+        self, project_id: UUID, line_numbers: list[int]
+    ) -> list[dict]:
+        """Fetch already-parsed line rows (for targeted regeneration)."""
+        if not line_numbers:
+            return []
+        client = get_supabase()
+        result = (
+            client.table(self.TABLE)
+            .select("*")
+            .eq("project_id", str(project_id))
+            .in_("line_number", line_numbers)
+            .order("line_number")
+            .execute()
+        )
+        return result.data or []
 
     async def mark_failed(
         self,

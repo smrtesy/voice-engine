@@ -134,3 +134,123 @@ async def test_other_http_error_maps_to_api_error():
 
     with pytest.raises(ResembleAPIError):
         await adapter.generate_tts(GenerateRequest(text="t", voice_id="v"))
+
+
+@pytest.mark.asyncio
+async def test_tts_posts_to_project_scoped_endpoint():
+    adapter = ResembleAdapter()
+    adapter._project_uuid = "proj-9"
+    adapter.client = MagicMock()
+    adapter.client.post = AsyncMock(
+        return_value=_mock_response(
+            {"item": {"uuid": "c", "audio_src": "u", "duration": 1.0}}
+        )
+    )
+
+    await adapter.generate_tts(GenerateRequest(text="שלום", voice_id="v"))
+
+    url = adapter.client.post.call_args[0][0]
+    assert url == "/projects/proj-9/clips"
+
+
+@pytest.mark.asyncio
+async def test_tts_uses_tagged_body_over_plain_text():
+    adapter = ResembleAdapter()
+    adapter.client = MagicMock()
+    adapter.client.post = AsyncMock(
+        return_value=_mock_response(
+            {"item": {"uuid": "c", "audio_src": "u", "duration": 1.0}}
+        )
+    )
+
+    body = "<build-intensity>יש!</build-intensity>"
+    result = await adapter.generate_tts(
+        GenerateRequest(
+            text="יש!",
+            voice_id="v",
+            tts_body=body,
+            tags=[{"tag": "build-intensity", "type": "wrap", "source": "script"}],
+        )
+    )
+
+    payload = adapter.client.post.call_args[1]["json"]
+    assert payload["data"] == body
+    assert result.adapter_metadata["body"] == body
+
+
+@pytest.mark.asyncio
+async def test_missing_project_uuid_raises():
+    adapter = ResembleAdapter()
+    adapter._project_uuid = ""
+    adapter.client = MagicMock()
+    adapter.client.post = AsyncMock()
+
+    with pytest.raises(ResembleAPIError, match="RESEMBLE_PROJECT_UUID"):
+        await adapter.generate_tts(GenerateRequest(text="t", voice_id="v"))
+
+
+@pytest.mark.asyncio
+async def test_list_voices_follows_pagination():
+    adapter = ResembleAdapter()
+    adapter.client = MagicMock()
+    responses = [
+        _mock_response({"items": [{"uuid": "a"}], "num_pages": 2}),
+        _mock_response({"items": [{"uuid": "b"}], "num_pages": 2}),
+    ]
+    adapter.client.get = AsyncMock(side_effect=responses)
+
+    voices = await adapter.list_voices()
+    assert [v["uuid"] for v in voices] == ["a", "b"]
+    assert adapter.client.get.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_voice_accepts_200_and_204():
+    adapter = ResembleAdapter()
+    adapter.client = MagicMock()
+    adapter.client.delete = AsyncMock(return_value=_mock_response({}, 200))
+    assert await adapter.delete_voice("v") is True
+
+    adapter.client.delete = AsyncMock(return_value=_mock_response({}, 204))
+    assert await adapter.delete_voice("v") is True
+
+    adapter.client.delete = AsyncMock(return_value=_mock_response({}, 404))
+    assert await adapter.delete_voice("v") is False
+
+
+@pytest.mark.asyncio
+async def test_create_voice_clone_creates_rapid_then_upgrades(tmp_path):
+    sample = tmp_path / "sample.wav"
+    sample.write_bytes(b"RIFFsample")
+
+    adapter = ResembleAdapter()
+    calls: list[str] = []
+
+    async def fake_post(url, **kwargs):
+        calls.append(url)
+        if url == "/voices":
+            return _mock_response({"item": {"uuid": "voice-1"}})
+        return _mock_response({}, 200)
+
+    adapter.client = MagicMock()
+    adapter.client.post = AsyncMock(side_effect=fake_post)
+
+    # Mock the separate multipart upload client.
+    upload_client = MagicMock()
+    upload_client.post = AsyncMock(return_value=_mock_response({"item": {"uuid": "rec-1"}}))
+    upload_ctx = MagicMock()
+    upload_ctx.__aenter__ = AsyncMock(return_value=upload_client)
+    upload_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("voice_engine.adapters.resemble.httpx.AsyncClient", return_value=upload_ctx):
+        voice_uuid = await adapter.create_voice_clone(sample, "Rivka")
+
+    assert voice_uuid == "voice-1"
+    # Created as rapid, then built and upgraded to Ultra.
+    create_payload = next(
+        c.kwargs["json"] for c in adapter.client.post.call_args_list if c.args[0] == "/voices"
+    )
+    assert create_payload["dataset"] == "rapid"
+    assert "/voices/voice-1/build" in calls
+    assert "/voices/voice-1/upgrade" in calls
+    upload_client.post.assert_awaited_once()

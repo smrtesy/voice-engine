@@ -44,9 +44,10 @@ def test_directions_are_hebrew():
         )
 
 
-def test_eighteen_emotion_directions():
-    # Spec says we ship 18. Lock that in so additions are deliberate.
-    assert len(EMOTION_DIRECTIONS) == 18
+def test_emotion_directions_count():
+    # Lock the count so additions are deliberate. 18 original + 3 added for the
+    # numbered-script format (מקריאה, מגמגם, מגמגם מתוך לחץ).
+    assert len(EMOTION_DIRECTIONS) == 21
 
 
 def test_chabad_niqqud_replacement():

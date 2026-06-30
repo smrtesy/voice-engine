@@ -80,12 +80,36 @@ async def clone_voice(request: CreateVoiceRequest) -> VoiceCreatedResponse:
     # Resemble webhook for training completion. The "training" return value
     # is a hint, not a live status — once we add polling or webhook handling,
     # update this comment.
-    is_rapid = request.voice_type == "rapid"
+    # Clones are created rapid then upgraded to resemble-ultra (async, ~minutes).
+    # Report "training" — the caller polls GET /voices/{uuid}/status for readiness.
     return VoiceCreatedResponse(
         voice_id=voice_id,
         voice_uuid=voice_id,
-        status="ready" if is_rapid else "training",
+        status="training",
     )
+
+
+@router.get("/{voice_id}/status")
+async def voice_status(voice_id: str) -> dict:
+    """Fetch a voice's current state (used to poll clone/upgrade readiness)."""
+    adapter = get_adapter()
+    try:
+        item = await adapter.get_voice_status(voice_id)
+    except AttributeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e)
+        ) from e
+    except Exception as e:
+        logger.error("voice_status_failed", voice_id=voice_id, error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)
+        ) from e
+    return {
+        "voice_uuid": item.get("uuid", voice_id),
+        "name": item.get("name"),
+        "status": item.get("status"),
+        "dataset": item.get("dataset"),
+    }
 
 
 @router.delete("/{voice_id}")

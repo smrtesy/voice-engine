@@ -31,7 +31,11 @@ async def parse_script_endpoint(request: ParseScriptRequest) -> ParseScriptRespo
 
     try:
         client = GoogleDocsClient(request.google_oauth_token)
-        text = client.fetch_document_text(request.google_doc_id)
+        text = client.fetch_document_text(
+            request.google_doc_id,
+            tab_id=request.google_doc_tab_id,
+            tab_title=request.google_doc_tab_title,
+        )
     except Exception as e:
         logger.error("google_docs_fetch_failed", error=str(e))
         raise HTTPException(
@@ -61,3 +65,23 @@ async def parse_script_endpoint(request: ParseScriptRequest) -> ParseScriptRespo
         warnings=warnings,
         preview=preview,
     )
+
+
+@router.post("/tabs")
+async def list_tabs_endpoint(request: ParseScriptRequest) -> dict:
+    """List the tabs of a Google Doc so the UI can offer a language picker."""
+    if not request.google_oauth_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="google_oauth_token is required",
+        )
+    try:
+        client = GoogleDocsClient(request.google_oauth_token)
+        tabs = client.list_document_tabs(request.google_doc_id)
+    except Exception as e:
+        logger.error("google_docs_tabs_failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to list Google Doc tabs: {e}",
+        ) from e
+    return {"tabs": tabs}

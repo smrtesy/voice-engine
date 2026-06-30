@@ -79,6 +79,12 @@ class JobOrchestrator:
         await self._set_running(job_id, started_at)
         await self.webhook.send_job_started(request.org_id, request.project_id, job_id)
 
+        # Targeted re-render of specific lines (e.g. lines the user marked for
+        # redo). Uses the lines already stored in the DB — honoring any manual
+        # edits to text/tags — instead of re-parsing the whole script.
+        if request.job_type == "regenerate_line":
+            return await self._process_regenerate(job_id, request, started_at)
+
         try:
             script_text = await self._fetch_script(request)
 
@@ -191,7 +197,11 @@ class JobOrchestrator:
                 "google_oauth_token is required (caller must pass user OAuth token)"
             )
         client = GoogleDocsClient(request.google_oauth_token)
-        return client.fetch_document_text(request.google_doc_id)
+        return client.fetch_document_text(
+            request.google_doc_id,
+            tab_id=request.google_doc_tab_id,
+            tab_title=request.google_doc_tab_title,
+        )
 
     async def _load_characters(
         self,
@@ -324,6 +334,8 @@ class JobOrchestrator:
 
         gen_req = GenerateRequest(
             text=line.text_for_tts,
+            tts_body=line.tts_body or line.text_for_tts,
+            tags=line.tags or [],
             voice_id=character.resemble_voice_id,
             language=character.language,
             input_audio_url=input_audio_url,
@@ -365,8 +377,20 @@ class JobOrchestrator:
                 local_path,
                 request.org_id,
                 request.project_id,
-                f"{line.line_number:03d}_{line.speaker_name}.wav",
+                self._output_filename(request, line),
             )
+
+        # Persist the exact Resemble request for transparency in the UI.
+        resemble_request = {
+            "model": gen_req.model,
+            "voice_uuid": gen_req.voice_id,
+            "body": result.adapter_metadata.get("body", gen_req.tts_body),
+            "tags": gen_req.tags,
+            "emotion": line.emotion,
+            "emotion_source": line.emotion_source,
+            "sample_rate": gen_req.sample_rate,
+            "mode": request.mode.value,
+        }
 
         await self.lines_repo.mark_completed(
             request.project_id,
@@ -374,6 +398,7 @@ class JobOrchestrator:
             storage_path,
             result.duration_seconds,
             result.cost_usd,
+            resemble_request=resemble_request,
         )
 
         # Find the line_id we wrote (so the webhook can carry it).
@@ -398,3 +423,105 @@ class JobOrchestrator:
             "duration": result.duration_seconds,
             "cost": result.cost_usd,
         }
+
+    @staticmethod
+    def _output_filename(request: CreateJobRequest, line: ProcessedLine) -> str:
+        """Output WAV name: "{code}_{line:03d}.wav" when a program code is set,
+        else the legacy "{line:03d}_{speaker}.wav"."""
+        if request.code:
+            return f"{request.code}_{line.line_number:03d}.wav"
+        return f"{line.line_number:03d}_{line.speaker_name}.wav"
+
+    # ─── Regenerate specific lines ───────────────────────────────────────────
+
+    def _row_to_processed_line(self, row: dict) -> ProcessedLine:
+        """Rebuild a ProcessedLine from a stored smrtvoice_lines row."""
+        return ProcessedLine(
+            line_number=row["line_number"],
+            scene_title=row.get("scene_title"),
+            speaker_name=row["speaker_name"],
+            text_raw=row.get("text_raw", ""),
+            text_clean=row.get("text_clean", ""),
+            directions=row.get("directions") or [],
+            is_pointed=bool(row.get("text_pointed")),
+            character_id=UUID(row["character_id"]) if row.get("character_id") else None,
+            text_for_tts=row.get("text_for_tts") or row.get("text_clean", ""),
+            emotion=row.get("emotion") or "neutral",
+            emotion_source=row.get("emotion_source") or "none",
+            tts_body=row.get("tts_body") or (row.get("text_for_tts") or ""),
+            tags=row.get("tags") or [],
+            resemble_prompt=row.get("resemble_prompt"),
+            final_exaggeration=row.get("final_exaggeration") or 0.5,
+            final_pitch=row.get("final_pitch") or 0.0,
+            final_pace=row.get("final_pace") or "normal",
+        )
+
+    async def _process_regenerate(
+        self, job_id: UUID, request: CreateJobRequest, started_at: datetime
+    ) -> JobResult:
+        """Re-render only the requested line numbers from their stored data."""
+        try:
+            rows = await self.lines_repo.get_lines_by_numbers(
+                request.project_id, request.line_numbers
+            )
+            lines = [self._row_to_processed_line(r) for r in rows]
+            if not lines:
+                raise RuntimeError("No matching lines to regenerate")
+
+            results = await self._generate_audio_for_lines(
+                job_id, request, lines, audio_segments=None
+            )
+
+            total_duration = sum(r["duration"] for r in results)
+            total_cost = sum(r["cost"] for r in results)
+            lines_succeeded = sum(1 for r in results if r["success"])
+            lines_failed = len(results) - lines_succeeded
+            completed_at = datetime.now(timezone.utc)
+
+            job_result = JobResult(
+                job_id=job_id,
+                project_id=request.project_id,
+                total_lines=len(lines),
+                lines_completed=lines_succeeded,
+                lines_failed=lines_failed,
+                lines_skipped=0,
+                total_duration_seconds=total_duration,
+                total_cost_usd=total_cost,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+            await self.jobs_repo.update(
+                job_id,
+                {
+                    "status": "completed",
+                    "completed_at": completed_at.isoformat(),
+                    "result": job_result.model_dump(mode="json"),
+                    "total_cost_usd": total_cost,
+                    "progress": 100,
+                },
+            )
+            await self.webhook.send_job_completed(
+                request.org_id, request.project_id, job_id, job_result
+            )
+            logger.info(
+                "regenerate_completed",
+                job_id=str(job_id),
+                lines=len(lines),
+                succeeded=lines_succeeded,
+                failed=lines_failed,
+            )
+            return job_result
+        except Exception as e:
+            logger.exception("regenerate_failed", job_id=str(job_id))
+            await self.jobs_repo.update(
+                job_id,
+                {
+                    "status": "failed",
+                    "error_message": str(e),
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            await self.webhook.send_job_failed(
+                request.org_id, request.project_id, job_id, str(e)
+            )
+            raise
