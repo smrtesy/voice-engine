@@ -16,6 +16,17 @@ COPY poetry.lock* ./
 RUN poetry config virtualenvs.create false \
     && poetry install --only main --no-interaction --no-ansi --no-root
 
+# Optional: install the forced-alignment stack for voice cloning. Only the
+# worker needs it. Build the worker image with --build-arg INSTALL_ALIGNMENT=true.
+# CPU wheels keep the image lean (no CUDA). The MMS model (~1GB) is downloaded
+# and cached at runtime on first use, not baked in.
+ARG INSTALL_ALIGNMENT=false
+RUN if [ "$INSTALL_ALIGNMENT" = "true" ]; then \
+        pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+            torch torchaudio \
+        && pip install --no-cache-dir soundfile uroman ; \
+    fi
+
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 

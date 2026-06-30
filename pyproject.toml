@@ -51,6 +51,13 @@ python-multipart = "^0.0.9"
 cryptography = "^42.0.0"
 python-jose = {extras = ["cryptography"], version = "^3.3.0"}
 
+# NOTE: Voice cloning's forced aligner needs torch, torchaudio and uroman.
+# These are intentionally NOT Poetry dependencies — they're heavy (CPU wheels,
+# ~hundreds of MB) and only the worker needs them. They're installed in the
+# worker Docker image via pip with the CPU index (see Dockerfile,
+# INSTALL_ALIGNMENT build arg). cloning/aligner.py imports them lazily and
+# raises a clear error if they're missing, so the API process and CI stay light.
+
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
 pytest-asyncio = "^0.23.0"

@@ -234,6 +234,120 @@ class ResembleAdapter(TTSAdapter):
         )
         return voice_uuid
 
+    async def create_voice(
+        self,
+        name: str,
+        voice_type: str = "professional",
+        language: str = "he",
+        dataset_url: str | None = None,
+        callback_uri: str | None = None,
+    ) -> dict:
+        """
+        Create a voice record (no recordings yet).
+
+        Used by the professional-clone pipeline. If ``dataset_url`` is given,
+        Resemble fetches that ZIP and (for professional voices) training starts
+        automatically — no separate recordings upload needed. Otherwise the
+        caller uploads recordings then calls :meth:`build_voice`.
+
+        NOTE: the exact create payload (field names for the voice tier) is not
+        100% verified against Resemble's current API — this whole path also
+        requires a Business plan, so verify on the first real run. The tier
+        field and dataset_url are isolated here so they're easy to adjust.
+
+        Returns the raw Resemble ``item`` dict (includes ``uuid``).
+        """
+        payload: dict = {"name": name[:256], "consent": True}
+        if dataset_url:
+            payload["dataset_url"] = dataset_url
+        if callback_uri:
+            payload["callback_uri"] = callback_uri
+
+        try:
+            response = await self.client.post("/voices", json=payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            self._raise_for_status(e)
+
+        item = response.json()["item"]
+        logger.info(
+            "resemble_voice_created",
+            voice_uuid=item["uuid"],
+            name=name,
+            has_dataset_url=bool(dataset_url),
+        )
+        return item
+
+    async def upload_recording(
+        self,
+        voice_uuid: str,
+        file_path: Path,
+        text: str,
+        emotion: str = "neutral",
+        name: str | None = None,
+        is_active: bool = True,
+    ) -> dict:
+        """
+        Upload one recording (multipart) to a voice, tagged with an emotion.
+
+        Used by the individual-upload path, which preserves the per-sentence
+        emotion labels the dataset ZIP can't carry. is_active is sent as the
+        string "true"/"false" because multipart form fields must be strings.
+        """
+        headers = {"Authorization": f"Token {self.api_key}"}
+        with open(file_path, "rb") as f:
+            audio_bytes = f.read()
+
+        async with httpx.AsyncClient(
+            base_url=self.base_url, headers=headers, timeout=600.0
+        ) as upload_client:
+            files = {"file": (Path(file_path).name, audio_bytes, "audio/wav")}
+            data = {
+                "text": text,
+                "emotion": emotion,
+                "is_active": str(is_active).lower(),
+            }
+            if name:
+                data["name"] = name
+            try:
+                response = await upload_client.post(
+                    f"/voices/{voice_uuid}/recordings", files=files, data=data
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                self._raise_for_status(e)
+
+        return response.json()
+
+    async def build_voice(self, voice_uuid: str, enable_sts: bool = True) -> dict:
+        """
+        Start training the voice.
+
+        CRITICAL: ``enable_sts=True`` sends ``fill=true``, which turns on
+        speech-to-speech training. This project relies on STS, so this is the
+        default. Without this build step a professional voice never trains.
+        """
+        payload = {"fill": enable_sts}
+        try:
+            response = await self.client.post(
+                f"/voices/{voice_uuid}/build", json=payload
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            self._raise_for_status(e)
+
+        logger.info("resemble_voice_build_started", voice_uuid=voice_uuid, sts=enable_sts)
+        return response.json()
+
+    async def get_voice_status(self, voice_uuid: str) -> dict:
+        """Fetch a voice's current record (for polling training status)."""
+        try:
+            response = await self.client.get(f"/voices/{voice_uuid}")
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            self._raise_for_status(e)
+        return response.json().get("item", response.json())
+
     async def delete_voice(self, voice_id: str) -> bool:
         response = await self.client.delete(f"/voices/{voice_id}")
         return response.status_code == 204

@@ -19,7 +19,11 @@ services:
       - ./src:/app/src
 
   worker:
-    build: .
+    build:
+      context: .
+      args:
+        # Worker runs forced alignment for voice cloning → needs the ML stack.
+        INSTALL_ALIGNMENT: "true"
     env_file: .env
     environment:
       SERVICE_ROLE: worker

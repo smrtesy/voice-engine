@@ -61,6 +61,39 @@ src/voice_engine/
 └── models/              Pydantic request/response/domain models
 ```
 
+## Professional voice cloning (from recordings + script)
+
+Builds a professional Resemble clone from long-form recordings plus the script
+they were read from — no manual transcription or hand-cutting.
+
+```
+recordings (.wav, multi-minute) + script (.docx)
+        ↓  parse script → per-sentence text + emotion (from the script's structure)
+        ↓  forced-align each recording to its part's sentences  (MMS, CPU)
+        ↓  cut per-sentence clips (1.5–15s, original quality) + build dataset ZIP
+        ↓  create Resemble voice + build with fill=true  (enables STS training)
+```
+
+The script's own layout supplies the emotion of each line (the emotion
+sub-headers in the emotions part, the parentheticals in the mixed part), so
+clips are emotion-tagged automatically.
+
+Endpoints (under `/voices`):
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/voices/clone-pro` | Recordings + script → aligned clips → clone (runs in worker) |
+| POST | `/voices/clone-zip` | Create a clone from a ready Resemble dataset ZIP URL |
+| GET  | `/voices/{uuid}/status` | Poll Resemble training status |
+
+Module: `src/voice_engine/cloning/` — `script_parser`, `aligner` (MMS forced
+alignment), `dataset_builder` (cut + ZIP), `clone_manager` (orchestration).
+
+> **Requires a Resemble Business plan.** The cloning API returns 403 otherwise.
+> Forced alignment is CPU-heavy and runs only in the worker; the worker image
+> installs the ML stack via `--build-arg INSTALL_ALIGNMENT=true` (CPU torch
+> wheels). The API image stays lean — `cloning/aligner.py` imports torch lazily.
+
 ## Status
 
 Skeleton. Routes return real Pydantic shapes but most business logic raises
