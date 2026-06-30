@@ -32,6 +32,7 @@ from voice_engine.audio.splitter import AudioSplitter
 from voice_engine.config import get_settings
 from voice_engine.db.characters import CharactersRepository
 from voice_engine.db.jobs import JobsRepository
+from voice_engine.db.lexicon import LexiconRepository
 from voice_engine.db.lines import LinesRepository
 from voice_engine.db.projects import ProjectsRepository
 from voice_engine.models.domain import (
@@ -58,6 +59,7 @@ class JobOrchestrator:
         self.jobs_repo = JobsRepository()
         self.lines_repo = LinesRepository()
         self.chars_repo = CharactersRepository()
+        self.lexicon_repo = LexiconRepository()
         self.projects_repo = ProjectsRepository()
         self.storage = StorageManager()
         # Preprocessor is built per-job in process_job so it can honor the
@@ -102,7 +104,12 @@ class JobOrchestrator:
             await self.lines_repo.create_batch(request.project_id, lines, request.org_id)
             characters = await self._load_characters(request, lines)
 
-            processed_lines = await self.preprocessor.process_batch(lines, characters)
+            # Per-org pronunciation fixes (e.g. 770 → סעוון סעוונטי), merged with
+            # the built-in defaults inside the preprocessor.
+            pronunciations = await self.lexicon_repo.get_map(request.org_id)
+            processed_lines = await self.preprocessor.process_batch(
+                lines, characters, pronunciations
+            )
             for processed in processed_lines:
                 await self.lines_repo.update_llm_data(request.project_id, processed)
 
@@ -388,6 +395,7 @@ class JobOrchestrator:
             "tags": gen_req.tags,
             "emotion": line.emotion,
             "emotion_source": line.emotion_source,
+            "pronunciation_subs": line.pronunciation_subs,
             "sample_rate": gen_req.sample_rate,
             "mode": request.mode.value,
         }

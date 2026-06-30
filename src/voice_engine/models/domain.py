@@ -109,6 +109,8 @@ class ProcessedLine(ScriptLine):
     tts_body: str = ""
     tags: list[dict] = []
     emotion_source: Literal["script", "llm", "none"] = "llm"
+    # Pronunciation fixes applied to the text (e.g. 770 → סעוון סעוונטי).
+    pronunciation_subs: list[dict] = []
 
     # Legacy chatterbox/STS params. Ultra ignores these; kept with defaults.
     final_exaggeration: float = 0.5

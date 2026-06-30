@@ -7,6 +7,7 @@ import structlog
 from voice_engine.config import get_settings
 from voice_engine.dictionaries.emotion_directions import EMOTION_DIRECTIONS
 from voice_engine.dictionaries.hebrew_names import HEBREW_NAME_FIXES
+from voice_engine.dictionaries.pronunciations import apply_pronunciations
 from voice_engine.dictionaries.resemble_tags import compose_body, tags_for_emotion
 from voice_engine.lib.hebrew_utils import strip_niqqud
 from voice_engine.models.domain import Character, ProcessedLine, ScriptLine
@@ -79,6 +80,7 @@ class LLMPreprocessor:
         line: ScriptLine,
         character: Character,
         context_lines: list[ScriptLine] | None = None,
+        pronunciations: dict[str, str] | None = None,
     ) -> ProcessedLine:
         system_prompt = build_system_prompt(
             character_name=character.name,
@@ -128,6 +130,9 @@ class LLMPreprocessor:
         # Plain Hebrew, no niqqud — Ultra vocalizes internally (niqqud harms it).
         text_for_tts = strip_niqqud(llm_output.get("text_for_tts") or line.text_clean).strip()
 
+        # Fix known mispronunciations (e.g. 770 → סעוון סעוונטי) before tagging.
+        text_for_tts, pron_subs = apply_pronunciations(text_for_tts, pronunciations)
+
         # The script ALWAYS wins: a recognised stage direction overrides the
         # LLM's emotion. Otherwise use the LLM's emotion (source "llm"), or
         # neutral with no tags.
@@ -165,6 +170,7 @@ class LLMPreprocessor:
             emotion_source=emotion_source,
             tags=tags,
             tts_body=tts_body,
+            pronunciation_subs=pron_subs,
             resemble_prompt=llm_output.get("resemble_prompt"),
         )
 
@@ -172,6 +178,7 @@ class LLMPreprocessor:
         self,
         lines: list[ScriptLine],
         characters: dict[str, Character],
+        pronunciations: dict[str, str] | None = None,
     ) -> list[ProcessedLine]:
         processed: list[ProcessedLine] = []
         for i, line in enumerate(lines):
@@ -185,6 +192,8 @@ class LLMPreprocessor:
                 continue
 
             context = lines[max(0, i - 2) : i]
-            processed.append(await self.process_line(line, character, context))
+            processed.append(
+                await self.process_line(line, character, context, pronunciations)
+            )
 
         return processed
