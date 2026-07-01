@@ -1,5 +1,6 @@
 """Voice management endpoints."""
 
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
@@ -18,6 +19,28 @@ from voice_engine.storage.storage_manager import StorageManager
 logger = structlog.get_logger()
 
 router = APIRouter(dependencies=[Depends(verify_api_key)])
+
+# The Resemble voice list (paginated) and account are the same for the whole
+# account and change rarely, but the library/casting screens fetch them on every
+# load — each call is several Resemble round-trips. Cache them in-process for a
+# short window (busted on clone/delete) so repeat loads are instant.
+_VOICES_TTL = 180.0
+_cache: dict = {"voices": None, "voices_ts": 0.0, "account": None, "account_ts": 0.0}
+
+
+def _bust_voice_cache() -> None:
+    _cache["voices"] = None
+    _cache["voices_ts"] = 0.0
+    _cache["account"] = None
+    _cache["account_ts"] = 0.0
+
+
+def _cache_fresh(kind: str) -> bool:
+    """True if the cached value for `kind` ("voices"|"account") is still valid."""
+    return (
+        _cache[kind] is not None
+        and (time.monotonic() - _cache[f"{kind}_ts"]) < _VOICES_TTL
+    )
 
 
 async def _concat_parts_to_dataset(storage: StorageManager, urls: list[str]) -> str:
@@ -46,11 +69,15 @@ async def _concat_parts_to_dataset(storage: StorageManager, urls: list[str]) -> 
 
 
 @router.get("")
-async def list_voices() -> dict:
-    """List all voices in the configured Resemble account."""
+async def list_voices(refresh: bool = False) -> dict:
+    """List all voices in the configured Resemble account (cached ~3 min)."""
+    if not refresh and _cache_fresh("voices"):
+        return {"voices": _cache["voices"], "cached": True}
     try:
         adapter = get_adapter()
         voices = await adapter.list_voices()
+        _cache["voices"] = voices
+        _cache["voices_ts"] = time.monotonic()
         return {"voices": voices}
     except NotImplementedError as e:
         raise HTTPException(
@@ -130,6 +157,7 @@ async def clone_voice(request: CreateVoiceRequest) -> VoiceCreatedResponse:
     # update this comment.
     # Clones are created rapid then upgraded to resemble-ultra (async, ~minutes).
     # Report "training" — the caller polls GET /voices/{uuid}/status for readiness.
+    _bust_voice_cache()  # a new voice was created
     return VoiceCreatedResponse(
         voice_id=voice_id,
         voice_uuid=voice_id,
@@ -138,9 +166,11 @@ async def clone_voice(request: CreateVoiceRequest) -> VoiceCreatedResponse:
 
 
 @router.get("/account")
-async def account_info() -> dict:
-    """Connected Resemble account + total voice count. Credit/slot balances are
-    NOT exposed by the Resemble API v2 (only on their dashboard)."""
+async def account_info(refresh: bool = False) -> dict:
+    """Connected Resemble account + total voice count (cached ~3 min). Credit/slot
+    balances are NOT exposed by the Resemble API v2 (only on their dashboard)."""
+    if not refresh and _cache_fresh("account"):
+        return _cache["account"]
     try:
         adapter = get_adapter()
         account = await adapter.get_account()
@@ -155,7 +185,7 @@ async def account_info() -> dict:
     name = " ".join(
         p for p in [account.get("first_name"), account.get("last_name")] if p
     ).strip()
-    return {
+    payload = {
         "email": account.get("email"),
         "name": name or None,
         "teams": account.get("teams"),
@@ -164,6 +194,9 @@ async def account_info() -> dict:
         "credits_available": None,
         "billing_url": "https://app.resemble.ai/account/billing",
     }
+    _cache["account"] = payload
+    _cache["account_ts"] = time.monotonic()
+    return payload
 
 
 @router.post("/{voice_id}/sample")
@@ -221,6 +254,7 @@ async def delete_voice(voice_id: str) -> dict:
     try:
         adapter = get_adapter()
         ok = await adapter.delete_voice(voice_id)
+        _bust_voice_cache()  # a voice was removed
         return {"deleted": ok}
     except NotImplementedError as e:
         raise HTTPException(
