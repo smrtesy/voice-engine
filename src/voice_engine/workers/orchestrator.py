@@ -142,6 +142,7 @@ class JobOrchestrator:
             job_result = JobResult(
                 job_id=job_id,
                 project_id=request.project_id,
+                script_id=request.script_id,
                 total_lines=len(processed_lines),
                 lines_completed=lines_succeeded,
                 lines_failed=lines_failed,
@@ -537,6 +538,7 @@ class JobOrchestrator:
             job_result = JobResult(
                 job_id=job_id,
                 project_id=request.project_id,
+                script_id=request.script_id,
                 total_lines=len(lines),
                 lines_completed=lines_succeeded,
                 lines_failed=lines_failed,

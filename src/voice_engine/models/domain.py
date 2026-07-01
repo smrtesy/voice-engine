@@ -130,6 +130,7 @@ class AudioFile(BaseModel):
 class JobResult(BaseModel):
     job_id: UUID
     project_id: UUID
+    script_id: UUID | None = None
     total_lines: int
     lines_completed: int
     lines_failed: int
