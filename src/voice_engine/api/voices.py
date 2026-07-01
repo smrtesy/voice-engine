@@ -56,6 +56,13 @@ async def list_voices() -> dict:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e)
         ) from e
+    except Exception as e:
+        # Any Resemble/network/config failure must surface as a readable 502,
+        # not a bare 500. (e.g. missing RESEMBLE_API_KEY → auth error.)
+        logger.error("list_voices_failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Resemble list_voices failed: {e}"
+        ) from e
 
 
 @router.post("/clone", response_model=VoiceCreatedResponse)
@@ -134,8 +141,8 @@ async def clone_voice(request: CreateVoiceRequest) -> VoiceCreatedResponse:
 async def account_info() -> dict:
     """Connected Resemble account + total voice count. Credit/slot balances are
     NOT exposed by the Resemble API v2 (only on their dashboard)."""
-    adapter = get_adapter()
     try:
+        adapter = get_adapter()
         account = await adapter.get_account()
         total = await adapter.get_total_voice_count()
     except AttributeError as e:
@@ -211,11 +218,16 @@ async def voice_status(voice_id: str) -> dict:
 
 @router.delete("/{voice_id}")
 async def delete_voice(voice_id: str) -> dict:
-    adapter = get_adapter()
     try:
+        adapter = get_adapter()
         ok = await adapter.delete_voice(voice_id)
         return {"deleted": ok}
     except NotImplementedError as e:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e)
+        ) from e
+    except Exception as e:
+        logger.error("delete_voice_failed", voice_id=voice_id, error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Resemble delete failed: {e}"
         ) from e
