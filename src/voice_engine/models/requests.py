@@ -11,6 +11,11 @@ from voice_engine.models.domain import AdapterType, GenerationMode
 class CreateJobRequest(BaseModel):
     org_id: UUID
     project_id: UUID
+    # v2: the script (program) this job renders. Lines belong to a script.
+    script_id: UUID | None = None
+    # Per-script casting: speaker_name -> {resemble_voice_id, model, language}.
+    # When set, this replaces name-matching characters to a voice.
+    speaker_map: dict[str, dict] = {}
     user_id: UUID | None = None
 
     job_type: Literal["parse_script", "generate_audio", "regenerate_line"]
@@ -52,6 +57,14 @@ class ParseScriptRequest(BaseModel):
     google_oauth_token: str | None = None
     google_doc_tab_id: str | None = None
     google_doc_tab_title: str | None = None
+
+
+class VoiceSampleRequest(BaseModel):
+    """Synthesize a short preview with a voice (for the voice library)."""
+
+    text: str
+    language: str = "he"
+    model: str | None = None
 
 
 class CreateVoiceRequest(BaseModel):

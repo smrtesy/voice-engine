@@ -102,8 +102,9 @@ class JobOrchestrator:
             if not lines:
                 raise RuntimeError("Script parsed to zero lines")
 
-            await self.lines_repo.create_batch(request.project_id, lines, request.org_id)
-            characters = await self._load_characters(request, lines)
+            script_id = request.script_id or request.project_id
+            await self.lines_repo.create_batch(script_id, lines, request.org_id)
+            characters = await self._build_characters(request, lines)
 
             # Per-org pronunciation fixes (e.g. 770 → סעוון סעוונטי), merged with
             # the built-in defaults inside the preprocessor.
@@ -112,7 +113,7 @@ class JobOrchestrator:
                 lines, characters, pronunciations
             )
             for processed in processed_lines:
-                await self.lines_repo.update_llm_data(request.project_id, processed)
+                await self.lines_repo.update_llm_data(script_id, processed)
 
             audio_segments: list[Path] | None = None
             tmp_root: TemporaryDirectory | None = None
@@ -126,7 +127,7 @@ class JobOrchestrator:
 
             try:
                 results = await self._generate_audio_for_lines(
-                    job_id, request, processed_lines, audio_segments
+                    job_id, request, processed_lines, audio_segments, characters
                 )
             finally:
                 if tmp_root:
@@ -211,6 +212,35 @@ class JobOrchestrator:
             tab_title=request.google_doc_tab_title,
         )
 
+    async def _build_characters(
+        self,
+        request: CreateJobRequest,
+        lines: list[ScriptLine],
+    ) -> dict[str, Character]:
+        """Resolve speaker_name → Character (voice) for this job.
+
+        v2: prefer the explicit per-script casting `speaker_map`
+        (speaker_name → {resemble_voice_id, model, language, character_id?,
+        character_name?, description?}). Falls back to the legacy name-match
+        against DB characters when no map is supplied.
+        """
+        if request.speaker_map:
+            characters: dict[str, Character] = {}
+            for speaker, v in request.speaker_map.items():
+                if not isinstance(v, dict) or not v.get("resemble_voice_id"):
+                    continue
+                characters[speaker] = Character(
+                    id=UUID(v["character_id"]) if v.get("character_id") else None,
+                    org_id=request.org_id,
+                    name=v.get("character_name") or speaker,
+                    description=v.get("description"),
+                    resemble_voice_id=v["resemble_voice_id"],
+                    resemble_model=v.get("model"),
+                    language=v.get("language", "he"),
+                )
+            return characters
+        return await self._load_characters(request, lines)
+
     async def _load_characters(
         self,
         request: CreateJobRequest,
@@ -258,6 +288,7 @@ class JobOrchestrator:
         request: CreateJobRequest,
         processed_lines: list[ProcessedLine],
         audio_segments: list[Path] | None,
+        characters: dict[str, Character],
     ) -> list[dict]:
         adapter = get_adapter(request.adapter)
         semaphore = asyncio.Semaphore(self.settings.max_concurrent_lines)
@@ -276,7 +307,7 @@ class JobOrchestrator:
                     else None
                 )
                 return await self._generate_single_line(
-                    job_id, request, line, segment, adapter
+                    job_id, request, line, segment, adapter, characters
                 )
 
         tasks = [process_one(i, line) for i, line in enumerate(processed_lines)]
@@ -300,12 +331,20 @@ class JobOrchestrator:
         line: ProcessedLine,
         audio_segment: Path | None,
         adapter,
+        characters: dict[str, Character],
     ) -> dict:
         """Generate audio for one line and upload it. Returns a result dict."""
-        if not line.character_id:
+        script_id = request.script_id or request.project_id
+
+        # Resolve the cast voice for this line's speaker.
+        character = characters.get(line.speaker_name)
+        if not character or not character.resemble_voice_id:
+            await self.lines_repo.mark_failed(
+                script_id, line.line_number, "no voice cast for this speaker"
+            )
             return {
                 "success": False,
-                "error": "no character_id resolved",
+                "error": f"no voice cast for speaker '{line.speaker_name}'",
                 "duration": 0.0,
                 "cost": 0.0,
             }
@@ -314,22 +353,12 @@ class JobOrchestrator:
         input_audio_url: str | None = None
         if audio_segment is not None:
             input_path = (
-                f"{request.org_id}/projects/{request.project_id}/input/"
+                f"{request.org_id}/scripts/{script_id}/input/"
                 f"line_{line.line_number:03d}.wav"
             )
             with open(audio_segment, "rb") as f:
                 self.storage._upload_bytes(input_path, f.read(), "audio/wav")
             input_audio_url = await self.storage.create_signed_url(input_path)
-
-        # Resolve resemble_voice_id from the character.
-        character = await self.chars_repo.get(line.character_id)
-        if not character or not character.resemble_voice_id:
-            return {
-                "success": False,
-                "error": "character has no resemble_voice_id",
-                "duration": 0.0,
-                "cost": 0.0,
-            }
 
         # Model precedence (most specific wins):
         #   1. character.resemble_model — per-character, UI-editable in
@@ -369,7 +398,7 @@ class JobOrchestrator:
                 error=str(e),
             )
             await self.lines_repo.mark_failed(
-                request.project_id, line.line_number, str(e)
+                script_id, line.line_number, str(e)
             )
             return {"success": False, "error": str(e), "duration": 0.0, "cost": 0.0}
 
@@ -392,7 +421,7 @@ class JobOrchestrator:
             storage_path = await self.storage.upload_audio(
                 local_path,
                 request.org_id,
-                request.project_id,
+                script_id,
                 self._output_filename(request, line),
             )
 
@@ -417,7 +446,7 @@ class JobOrchestrator:
         }
 
         await self.lines_repo.mark_completed(
-            request.project_id,
+            script_id,
             line.line_number,
             storage_path,
             result.duration_seconds,
@@ -426,7 +455,7 @@ class JobOrchestrator:
         )
 
         # Find the line_id we wrote (so the webhook can carry it).
-        line_id = await self.lines_repo.get_id(request.project_id, line.line_number)
+        line_id = await self.lines_repo.get_id(script_id, line.line_number)
 
         await self.webhook.send_line_completed(
             request.org_id,
@@ -434,6 +463,7 @@ class JobOrchestrator:
             job_id,
             {
                 "line_id": str(line_id) if line_id else str(uuid4()),
+                "script_id": str(script_id),
                 "line_number": line.line_number,
                 "speaker_name": line.speaker_name,
                 "output_audio_path": storage_path,
@@ -485,15 +515,17 @@ class JobOrchestrator:
     ) -> JobResult:
         """Re-render only the requested line numbers from their stored data."""
         try:
+            script_id = request.script_id or request.project_id
             rows = await self.lines_repo.get_lines_by_numbers(
-                request.project_id, request.line_numbers
+                script_id, request.line_numbers
             )
             lines = [self._row_to_processed_line(r) for r in rows]
             if not lines:
                 raise RuntimeError("No matching lines to regenerate")
 
+            characters = await self._build_characters(request, lines)
             results = await self._generate_audio_for_lines(
-                job_id, request, lines, audio_segments=None
+                job_id, request, lines, None, characters
             )
 
             total_duration = sum(r["duration"] for r in results)

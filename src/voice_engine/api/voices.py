@@ -7,10 +7,11 @@ from uuid import uuid4
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from voice_engine.adapters.base import GenerateRequest
 from voice_engine.adapters.factory import get_adapter
 from voice_engine.api.auth import verify_api_key
 from voice_engine.config import get_settings
-from voice_engine.models.requests import CreateVoiceRequest
+from voice_engine.models.requests import CreateVoiceRequest, VoiceSampleRequest
 from voice_engine.models.responses import VoiceCreatedResponse
 from voice_engine.storage.storage_manager import StorageManager
 
@@ -127,6 +128,62 @@ async def clone_voice(request: CreateVoiceRequest) -> VoiceCreatedResponse:
         voice_uuid=voice_id,
         status="training",
     )
+
+
+@router.get("/account")
+async def account_info() -> dict:
+    """Connected Resemble account + total voice count. Credit/slot balances are
+    NOT exposed by the Resemble API v2 (only on their dashboard)."""
+    adapter = get_adapter()
+    try:
+        account = await adapter.get_account()
+        total = await adapter.get_total_voice_count()
+    except AttributeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e)
+        ) from e
+    except Exception as e:
+        logger.error("resemble_account_failed", error=str(e))
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
+    name = " ".join(
+        p for p in [account.get("first_name"), account.get("last_name")] if p
+    ).strip()
+    return {
+        "email": account.get("email"),
+        "name": name or None,
+        "teams": account.get("teams"),
+        "total_voices": total,
+        # Resemble API v2 has no credit/slot endpoint — surfaced on the dashboard.
+        "credits_available": None,
+        "billing_url": "https://app.resemble.ai/account/billing",
+    }
+
+
+@router.post("/{voice_id}/sample")
+async def voice_sample(voice_id: str, request: VoiceSampleRequest) -> dict:
+    """Synthesize a short preview clip with a voice (for the voice library)."""
+    adapter = get_adapter()
+    settings = get_settings()
+    gen = GenerateRequest(
+        text=request.text,
+        tts_body=request.text,
+        voice_id=voice_id,
+        language=request.language,
+        model=request.model or settings.resemble_default_model,
+        sample_rate=settings.resemble_default_sample_rate,
+        precision=settings.resemble_default_precision,
+        use_hd=settings.resemble_default_use_hd,
+    )
+    try:
+        result = await adapter.generate_tts(gen)
+    except Exception as e:
+        logger.error("voice_sample_failed", voice_id=voice_id, error=str(e))
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
+    return {
+        "audio_url": result.audio_url,
+        "duration": result.duration_seconds,
+        "cost": result.cost_usd,
+    }
 
 
 @router.get("/{voice_id}/status")

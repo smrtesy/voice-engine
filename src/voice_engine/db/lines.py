@@ -15,7 +15,7 @@ class LinesRepository:
 
     async def create_batch(
         self,
-        project_id: UUID,
+        script_id: UUID,
         lines: list[ScriptLine],
         org_id: UUID,
     ) -> list[dict]:
@@ -23,7 +23,7 @@ class LinesRepository:
         rows = [
             {
                 "org_id": str(org_id),
-                "project_id": str(project_id),
+                "script_id": str(script_id),
                 "line_number": line.line_number,
                 "scene_title": line.scene_title,
                 "speaker_name": line.speaker_name,
@@ -36,21 +36,21 @@ class LinesRepository:
         ]
         if not rows:
             return []
-        # Upsert so re-parsing the same project doesn't fail on the
-        # (project_id, line_number) collision.
+        # Upsert so re-parsing the same script doesn't fail on the
+        # (script_id, line_number) collision.
         result = (
             client.table(self.TABLE)
-            .upsert(rows, on_conflict="project_id,line_number")
+            .upsert(rows, on_conflict="script_id,line_number")
             .execute()
         )
         return result.data or []
 
     async def update_llm_data(
-        self, project_id: UUID, processed: ProcessedLine
+        self, script_id: UUID, processed: ProcessedLine
     ) -> None:
         """Persist the LLM-processed fields onto the matching line row.
 
-        Matched by (project_id, line_number) so callers don't need the line UUID.
+        Matched by (script_id, line_number) so callers don't need the line UUID.
         """
         from datetime import datetime, timezone
 
@@ -75,13 +75,13 @@ class LinesRepository:
                 if processed.character_id
                 else None,
             }
-        ).eq("project_id", str(project_id)).eq(
+        ).eq("script_id", str(script_id)).eq(
             "line_number", processed.line_number
         ).execute()
 
     async def mark_completed(
         self,
-        project_id: UUID,
+        script_id: UUID,
         line_number: int,
         storage_path: str,
         duration_seconds: float,
@@ -100,11 +100,11 @@ class LinesRepository:
         if resemble_request is not None:
             fields["resemble_request"] = resemble_request
         client.table(self.TABLE).update(fields).eq(
-            "project_id", str(project_id)
+            "script_id", str(script_id)
         ).eq("line_number", line_number).execute()
 
     async def get_lines_by_numbers(
-        self, project_id: UUID, line_numbers: list[int]
+        self, script_id: UUID, line_numbers: list[int]
     ) -> list[dict]:
         """Fetch already-parsed line rows (for targeted regeneration)."""
         if not line_numbers:
@@ -113,7 +113,7 @@ class LinesRepository:
         result = (
             client.table(self.TABLE)
             .select("*")
-            .eq("project_id", str(project_id))
+            .eq("script_id", str(script_id))
             .in_("line_number", line_numbers)
             .order("line_number")
             .execute()
@@ -122,7 +122,7 @@ class LinesRepository:
 
     async def mark_failed(
         self,
-        project_id: UUID,
+        script_id: UUID,
         line_number: int,
         error_message: str,
     ) -> None:
@@ -132,14 +132,14 @@ class LinesRepository:
                 "status": "failed",
                 "error_message": error_message,
             }
-        ).eq("project_id", str(project_id)).eq("line_number", line_number).execute()
+        ).eq("script_id", str(script_id)).eq("line_number", line_number).execute()
 
-    async def get_id(self, project_id: UUID, line_number: int) -> UUID | None:
+    async def get_id(self, script_id: UUID, line_number: int) -> UUID | None:
         client = get_supabase()
         result = (
             client.table(self.TABLE)
             .select("id")
-            .eq("project_id", str(project_id))
+            .eq("script_id", str(script_id))
             .eq("line_number", line_number)
             .maybe_single()
             .execute()

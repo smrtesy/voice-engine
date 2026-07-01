@@ -42,7 +42,9 @@ class AdapterType(str, Enum):
 
 
 class Character(BaseModel):
-    id: UUID
+    # id is optional: a "character" may be a stock Resemble voice cast to a
+    # speaker (no DB character row).
+    id: UUID | None = None
     org_id: UUID
     name: str
     display_name: str | None = None

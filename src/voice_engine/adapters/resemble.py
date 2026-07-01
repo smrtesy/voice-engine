@@ -187,6 +187,18 @@ class ResembleAdapter(TTSAdapter):
             page += 1
         return voices
 
+    async def get_account(self) -> dict:
+        """Fetch the connected Resemble account (email, name, teams)."""
+        response = await self.client.get("/account")
+        response.raise_for_status()
+        return response.json().get("item", {})
+
+    async def get_total_voice_count(self) -> int:
+        """Total voices on the account (cheap — reads page 1's total_count)."""
+        response = await self.client.get("/voices", params={"page": 1})
+        response.raise_for_status()
+        return int(response.json().get("total_count", 0))
+
     async def get_voice_status(self, voice_id: str) -> dict:
         """Fetch a voice record. Returns {uuid, name, status, dataset/model...}."""
         response = await self.client.get(f"/voices/{voice_id}")
