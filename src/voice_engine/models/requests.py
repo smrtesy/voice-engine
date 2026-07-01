@@ -60,7 +60,10 @@ class CreateVoiceRequest(BaseModel):
     # so these are optional and only used for log enrichment.
     org_id: UUID | None = None
     character_id: UUID | None = None
-    sample_audio_url: HttpUrl
+    # A single sample (legacy) or many parts (e.g. a script's 6 recorded parts).
+    # Each source file is split into <=12s clips before upload.
+    sample_audio_url: HttpUrl | None = None
+    sample_audio_urls: list[HttpUrl] = []
     voice_name: str
     # Clones are always created rapid then upgraded to Ultra (the only path
     # Resemble accepts); this field is kept for compatibility.

@@ -2,12 +2,14 @@
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from voice_engine.adapters.factory import get_adapter
 from voice_engine.api.auth import verify_api_key
+from voice_engine.config import get_settings
 from voice_engine.models.requests import CreateVoiceRequest
 from voice_engine.models.responses import VoiceCreatedResponse
 from voice_engine.storage.storage_manager import StorageManager
@@ -15,6 +17,31 @@ from voice_engine.storage.storage_manager import StorageManager
 logger = structlog.get_logger()
 
 router = APIRouter(dependencies=[Depends(verify_api_key)])
+
+
+async def _concat_parts_to_dataset(storage: StorageManager, urls: list[str]) -> str:
+    """Concatenate multiple recording parts into one dataset file (capped at the
+    rapid budget), stage it in storage, and return a signed URL for dataset_url."""
+    from pydub import AudioSegment  # noqa: PLC0415 - heavy import, defer
+
+    max_ms = int(get_settings().resemble_clone_max_seconds * 1000)
+    with TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        combined = AudioSegment.empty()
+        for i, url in enumerate(urls, start=1):
+            src = tmp_dir / f"part_{i:02d}"
+            await storage.download(url, src)
+            combined += AudioSegment.from_file(str(src))
+            if len(combined) >= max_ms:
+                break
+        combined = combined[:max_ms]
+        out = tmp_dir / "dataset.wav"
+        combined.export(str(out), format="wav")
+        data = out.read_bytes()
+
+    storage_path = f"clone_datasets/{uuid4().hex}.wav"
+    storage._upload_bytes(storage_path, data, "audio/wav")
+    return await storage.create_signed_url(storage_path)
 
 
 @router.get("")
@@ -45,34 +72,47 @@ async def clone_voice(request: CreateVoiceRequest) -> VoiceCreatedResponse:
     adapter = get_adapter()
     storage = StorageManager()
 
-    with TemporaryDirectory() as tmp:
-        local_path = Path(tmp) / "sample.wav"
+    # Accept one URL (the usual case, e.g. recording 2) or many parts.
+    urls = [str(u) for u in request.sample_audio_urls] or (
+        [str(request.sample_audio_url)] if request.sample_audio_url else []
+    )
+    if not urls:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sample_audio_url or sample_audio_urls is required",
+        )
+
+    # Resemble's dataset_url method takes a single audio file (rapid: ~10s-3min)
+    # sent whole — no 12s splitting. One part → pass its URL straight through.
+    # Multiple parts → concatenate into one file, capped at the rapid budget.
+    if len(urls) == 1:
+        dataset_url = urls[0]
+    else:
         try:
-            await storage.download(str(request.sample_audio_url), local_path)
+            dataset_url = await _concat_parts_to_dataset(storage, urls)
         except Exception as e:
-            logger.error("sample_download_failed", error=str(e))
+            logger.error("sample_concat_failed", error=str(e))
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to download voice sample: {e}",
+                detail=f"Failed to combine voice sample parts: {e}",
             ) from e
 
-        try:
-            voice_id = await adapter.create_voice_clone(
-                sample_path=local_path,
-                name=request.voice_name,
-                voice_type=request.voice_type,
-                language=request.language,
-            )
-        except NotImplementedError as e:
-            raise HTTPException(
-                status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e)
-            ) from e
-        except Exception as e:
-            logger.error("voice_clone_failed", error=str(e))
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Voice clone failed: {e}",
-            ) from e
+    try:
+        voice_id = await adapter.create_voice_clone(
+            dataset_url=dataset_url,
+            name=request.voice_name,
+            language=request.language,
+        )
+    except NotImplementedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e)
+        ) from e
+    except Exception as e:
+        logger.error("voice_clone_failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Voice clone failed: {e}",
+        ) from e
 
     # Resemble pro voices take ~minutes to train; rapid is instant.
     # We do NOT poll Resemble for training status here — the caller (smrtesy

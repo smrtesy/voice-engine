@@ -24,9 +24,8 @@ class ChatterboxAdapter(TTSAdapter):
 
     async def create_voice_clone(
         self,
-        sample_path: Path,
+        dataset_url: str,
         name: str,
-        voice_type: str = "pro",
         language: str = "he",
     ) -> str:
         raise NotImplementedError("ChatterboxAdapter not yet implemented")

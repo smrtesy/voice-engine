@@ -219,10 +219,7 @@ async def test_delete_voice_accepts_200_and_204():
 
 
 @pytest.mark.asyncio
-async def test_create_voice_clone_creates_rapid_then_upgrades(tmp_path):
-    sample = tmp_path / "sample.wav"
-    sample.write_bytes(b"RIFFsample")
-
+async def test_create_voice_clone_uses_dataset_url_and_upgrades():
     adapter = ResembleAdapter()
     calls: list[str] = []
 
@@ -232,25 +229,30 @@ async def test_create_voice_clone_creates_rapid_then_upgrades(tmp_path):
             return _mock_response({"item": {"uuid": "voice-1"}})
         return _mock_response({}, 200)
 
+    async def fake_get(url, **kwargs):
+        # Report finished so _await_finished returns immediately.
+        return _mock_response({"item": {"uuid": "voice-1", "status": "finished"}})
+
     adapter.client = MagicMock()
     adapter.client.post = AsyncMock(side_effect=fake_post)
+    adapter.client.get = AsyncMock(side_effect=fake_get)
 
-    # Mock the separate multipart upload client.
-    upload_client = MagicMock()
-    upload_client.post = AsyncMock(return_value=_mock_response({"item": {"uuid": "rec-1"}}))
-    upload_ctx = MagicMock()
-    upload_ctx.__aenter__ = AsyncMock(return_value=upload_client)
-    upload_ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("voice_engine.adapters.resemble.httpx.AsyncClient", return_value=upload_ctx):
-        voice_uuid = await adapter.create_voice_clone(sample, "Rivka")
+    voice_uuid = await adapter.create_voice_clone(
+        "https://storage.example/rec2.wav", "Rivka"
+    )
 
     assert voice_uuid == "voice-1"
-    # Created as rapid, then built and upgraded to Ultra.
     create_payload = next(
         c.kwargs["json"] for c in adapter.client.post.call_args_list if c.args[0] == "/voices"
     )
-    assert create_payload["dataset"] == "rapid"
-    assert "/voices/voice-1/build" in calls
+    # dataset_url method, voice_type rapid (the only type this account supports).
+    assert create_payload["dataset_url"] == "https://storage.example/rec2.wav"
+    assert create_payload["voice_type"] == "rapid"
     assert "/voices/voice-1/upgrade" in calls
-    upload_client.post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_voice_clone_requires_dataset_url():
+    adapter = ResembleAdapter()
+    with pytest.raises(ResembleAPIError, match="dataset_url"):
+        await adapter.create_voice_clone("", "Rivka")

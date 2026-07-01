@@ -72,11 +72,17 @@ class TTSAdapter(ABC):
     @abstractmethod
     async def create_voice_clone(
         self,
-        sample_path: Path,
+        dataset_url: str,
         name: str,
-        voice_type: str = "pro",
         language: str = "he",
     ) -> str:
+        """Create a voice clone from a single dataset audio file (by URL).
+
+        Uses Resemble's dataset_url method (voice_type=rapid): the whole file
+        is sent as-is — NOT the per-recording endpoint, so the 12s-per-clip
+        limit does not apply. A rapid clone accepts ~10s–3min; it is then
+        upgraded to resemble-ultra. Returns the voice uuid.
+        """
         ...
 
     @abstractmethod

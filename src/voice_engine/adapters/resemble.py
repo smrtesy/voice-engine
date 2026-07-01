@@ -198,33 +198,30 @@ class ResembleAdapter(TTSAdapter):
 
     async def create_voice_clone(
         self,
-        sample_path: Path,
+        dataset_url: str,
         name: str,
-        voice_type: str = "rapid",
         language: str = "he",
     ) -> str:
         """
-        Create a Hebrew voice clone and upgrade it to Ultra.
+        Create a Hebrew voice clone from a single dataset file and upgrade it.
 
-        Validated flow (HANDOFF): the API only accepts `voice_type: "rapid"`
-        for new clones — "professional"/"pro"/"ultra" return 400 "no
-        professional clone slots remaining". The working path is therefore:
-          1. POST /voices (dataset=rapid)            → voice {uuid}
-          2. POST /voices/{uuid}/recordings          → multipart sample upload
-          3. POST /voices/{uuid}/build  (fill=true)  → assemble the rapid clone
-          4. POST /voices/{uuid}/upgrade             → upgrade to resemble-ultra
-        Steps 3–4 are best-effort: a failure there leaves a usable rapid clone
-        and is logged, not raised. The upgrade is undocumented but works
-        (~minutes, same UUID); poll readiness via get_voice_status.
-
-        `voice_type` is kept for interface compatibility but is always created
-        as rapid — that is the only path Resemble accepts.
-
+        Confirmed against the live account: the accepted shape is
+        `voice_type: "rapid"` + `dataset_url` (a single audio file, ~10s-3min).
+        This path is NOT subject to the 12s-per-recording limit, so the source
+        recording is sent whole — no splitting. Flow:
+          1. POST /voices {name, dataset_url, voice_type: rapid} → voice {uuid}
+          2. wait briefly for the rapid clone to finish (it's fast)
+          3. POST /voices/{uuid}/upgrade → upgrade to resemble-ultra
+        Step 3 is best-effort (logged, not raised); poll get_voice_status.
         Returns the voice uuid for use as voice_id in generate_tts.
         """
+        if not dataset_url:
+            raise ResembleAPIError("create_voice_clone requires a dataset_url")
+
         create_payload = {
             "name": name,
-            "dataset": "rapid",
+            "dataset_url": dataset_url,
+            "voice_type": "rapid",
             "consent": True,
             # Resemble has no per-voice language field; we record it in our DB
             # and pass it on every generate call.
@@ -239,60 +236,28 @@ class ResembleAdapter(TTSAdapter):
         voice_uuid = response.json()["item"]["uuid"]
         logger.info("resemble_voice_created", voice_uuid=voice_uuid, name=name)
 
-        # Step 2: upload the sample as a recording.
-        with open(sample_path, "rb") as f:
-            audio_bytes = f.read()
-
-        # Multipart upload requires a different client (no JSON Content-Type).
-        async with httpx.AsyncClient(
-            base_url=self.base_url,
-            headers={"Authorization": f"Token {self.api_key}"},
-            timeout=600.0,
-        ) as upload_client:
-            files = {
-                "file": (sample_path.name, audio_bytes, "audio/wav"),
-            }
-            data = {
-                "name": f"{name} sample",
-                "text": f"Voice sample for {name}",
-                "is_active": "true",
-            }
-            try:
-                upload_response = await upload_client.post(
-                    f"/voices/{voice_uuid}/recordings",
-                    files=files,
-                    data=data,
-                )
-                upload_response.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                self._raise_for_status(e)
-
-        logger.info(
-            "resemble_voice_sample_uploaded",
-            voice_uuid=voice_uuid,
-            sample_size_bytes=len(audio_bytes),
-        )
-
-        # Steps 3–4: build the rapid clone, then upgrade it to Ultra.
-        await self._build_voice(voice_uuid)
+        # A rapid clone finishes fast; wait a bounded window, then upgrade.
+        await self._await_finished(voice_uuid, timeout_s=60)
         await self._upgrade_voice(voice_uuid)
 
         return voice_uuid
 
-    async def _build_voice(self, voice_uuid: str) -> None:
-        """Assemble a rapid clone from its recordings (fill=true). Best-effort."""
-        try:
-            response = await self.client.post(
-                f"/voices/{voice_uuid}/build", json={"fill": True}
-            )
-            response.raise_for_status()
-            logger.info("resemble_voice_build_started", voice_uuid=voice_uuid)
-        except httpx.HTTPStatusError as e:
-            logger.warning(
-                "resemble_voice_build_failed",
-                voice_uuid=voice_uuid,
-                status=e.response.status_code,
-            )
+    async def _await_finished(self, voice_uuid: str, timeout_s: float = 60.0) -> bool:
+        """Poll a voice until status == 'finished' or timeout. Best-effort."""
+        import asyncio  # noqa: PLC0415
+
+        waited = 0.0
+        while waited < timeout_s:
+            try:
+                item = await self.get_voice_status(voice_uuid)
+                if (item.get("status") or "").lower() == "finished":
+                    return True
+            except Exception:  # noqa: BLE001 — keep waiting on transient errors
+                pass
+            await asyncio.sleep(3)
+            waited += 3
+        logger.info("resemble_voice_wait_timeout", voice_uuid=voice_uuid)
+        return False
 
     async def _upgrade_voice(self, voice_uuid: str) -> None:
         """Upgrade a rapid clone to resemble-ultra (undocumented). Best-effort."""

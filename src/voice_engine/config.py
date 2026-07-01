@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # resemble-ultra is the tested Hebrew recipe: handles niqqud internally and
     # supports emotion control via inline/wrapping tags in the clip body.
     resemble_default_model: str = "resemble-ultra"
+    # A rapid clone caps at ~3 min of source audio total (each clip <=12s). We
+    # split long recordings into <=12s clips and select up to this budget,
+    # spread across the parts. Raise if your account/plan allows more.
+    resemble_clone_max_seconds: float = 180.0
 
     # Anthropic
     anthropic_api_key: str
