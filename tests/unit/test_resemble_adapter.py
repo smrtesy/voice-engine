@@ -58,10 +58,10 @@ async def test_generate_sts_builds_convert_tag():
     payload = kwargs["json"]
     assert payload["voice_uuid"] == "voice-uuid"
     assert payload["model"] == "chatterbox"
-    assert "src=\"https://example.com/input.wav\"" in payload["data"]
-    assert 'pitch="1.5"' in payload["data"]
+    assert "src=\"https://example.com/input.wav\"" in payload["body"]
+    assert 'pitch="1.5"' in payload["body"]
     # Quotes inside prompt must be escaped to &quot;
-    assert "&quot;energy&quot;" in payload["data"]
+    assert "&quot;energy&quot;" in payload["body"]
 
     assert result.audio_url == "https://resemble.example/clip-123.wav"
     assert result.duration_seconds == 4.2
@@ -99,8 +99,8 @@ async def test_generate_tts_omits_input_audio():
     )
 
     payload = adapter.client.post.call_args[1]["json"]
-    assert payload["data"] == "שלום שרהלה"
-    assert "src=" not in payload["data"]
+    assert payload["body"] == "שלום שרהלה"
+    assert "src=" not in payload["body"]
     assert result.cost_usd == pytest.approx(2.0 * 0.0005)
 
 
@@ -174,7 +174,7 @@ async def test_tts_uses_tagged_body_over_plain_text():
     )
 
     payload = adapter.client.post.call_args[1]["json"]
-    assert payload["data"] == body
+    assert payload["body"] == body
     assert result.adapter_metadata["body"] == body
 
 

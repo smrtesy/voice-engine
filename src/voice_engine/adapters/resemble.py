@@ -73,7 +73,9 @@ class ResembleAdapter(TTSAdapter):
 
         payload: dict = {
             "voice_uuid": req.voice_id,
-            "data": convert_tag,
+            # Resemble's /projects/{uuid}/clips expects the text/SSML under
+            # "body" (a bare "data" yields HTTP 400: Expected 'body').
+            "body": convert_tag,
             "sample_rate": req.sample_rate,
             "output_format": req.output_format,
             "precision": req.precision,
@@ -99,8 +101,10 @@ class ResembleAdapter(TTSAdapter):
             self._raise_for_status(e)
 
         data = response.json()
+        # The project-scoped clips response carries audio_src but not always a
+        # "duration" — treat it as optional so parsing never KeyErrors.
         audio_url = data["item"]["audio_src"]
-        duration = float(data["item"]["duration"])
+        duration = float(data["item"].get("duration") or 0.0)
         cost = duration * self.COST_PER_SECOND
 
         logger.info(
@@ -132,7 +136,9 @@ class ResembleAdapter(TTSAdapter):
         body = req.tts_body or req.text
         payload: dict = {
             "voice_uuid": req.voice_id,
-            "data": body,
+            # Resemble's /projects/{uuid}/clips expects the text/SSML under
+            # "body" (a bare "data" yields HTTP 400: Expected 'body').
+            "body": body,
             "sample_rate": req.sample_rate,
             "output_format": req.output_format,
             "precision": req.precision,
@@ -156,8 +162,10 @@ class ResembleAdapter(TTSAdapter):
             self._raise_for_status(e)
 
         data = response.json()
+        # The project-scoped clips response carries audio_src but not always a
+        # "duration" — treat it as optional so parsing never KeyErrors.
         audio_url = data["item"]["audio_src"]
-        duration = float(data["item"]["duration"])
+        duration = float(data["item"].get("duration") or 0.0)
         cost = duration * self.COST_PER_SECOND
 
         return GenerateResult(
