@@ -65,7 +65,7 @@ def test_parses_numbered_dialogue_with_explicit_numbers() -> None:
     lines, _ = parse_script(text)
 
     # Explicit numbers are preserved, including the gap (no 11-16, 18-19).
-    assert [l.line_number for l in lines] == [10, 17, 20]
+    assert [ln.line_number for ln in lines] == [10, 17, 20]
     assert lines[0].speaker_name == "שלום"
     assert lines[0].text_clean == "הי, יש כאן חנות גלידה!"
     assert lines[0].scene_title == "סצנה 1"

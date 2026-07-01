@@ -1,6 +1,5 @@
 """Resemble AI adapter."""
 
-from pathlib import Path
 
 import httpx
 import structlog

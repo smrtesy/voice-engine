@@ -3,7 +3,7 @@
 import hashlib
 import hmac
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
@@ -73,7 +73,7 @@ class WebhookSender:
                 org_id=org_id,
                 project_id=project_id,
                 job_id=job_id,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 data={},
             )
         )
@@ -87,7 +87,7 @@ class WebhookSender:
                 org_id=org_id,
                 project_id=project_id,
                 job_id=job_id,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 data=line_data,
             )
         )
@@ -101,7 +101,7 @@ class WebhookSender:
                 org_id=org_id,
                 project_id=project_id,
                 job_id=job_id,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 data=result.model_dump(mode="json"),
             )
         )
@@ -115,7 +115,7 @@ class WebhookSender:
                 org_id=org_id,
                 project_id=project_id,
                 job_id=job_id,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 data={"error": error_message},
             )
         )

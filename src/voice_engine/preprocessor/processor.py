@@ -86,7 +86,7 @@ class LLMPreprocessor:
             character_name=character.name,
             character_description=character.description or "",
             context_lines=[
-                f"{l.speaker_name}: {l.text_clean}" for l in (context_lines or [])
+                f"{cl.speaker_name}: {cl.text_clean}" for cl in (context_lines or [])
             ],
             name_dictionary=HEBREW_NAME_FIXES,
             emotion_dictionary=EMOTION_DIRECTIONS,

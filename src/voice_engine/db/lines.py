@@ -1,5 +1,6 @@
 """smrtvoice_lines table access."""
 
+from datetime import UTC
 from uuid import UUID
 
 import structlog
@@ -52,13 +53,13 @@ class LinesRepository:
 
         Matched by (script_id, line_number) so callers don't need the line UUID.
         """
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         client = get_supabase()
         client.table(self.TABLE).update(
             {
                 "llm_processed": True,
-                "llm_processed_at": datetime.now(timezone.utc).isoformat(),
+                "llm_processed_at": datetime.now(UTC).isoformat(),
                 "text_for_tts": processed.text_for_tts,
                 "text_pointed": processed.text_for_tts
                 if processed.is_pointed

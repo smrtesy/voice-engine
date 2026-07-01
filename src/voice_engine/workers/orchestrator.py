@@ -18,7 +18,7 @@ ANY lines from being generated (e.g. script fetch, parser, storage init).
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import UUID, uuid4
@@ -72,7 +72,7 @@ class JobOrchestrator:
     async def process_job(
         self, job_id: UUID, request: CreateJobRequest
     ) -> JobResult:
-        started_at = datetime.now(timezone.utc)
+        started_at = datetime.now(UTC)
         logger.info("job_started", job_id=str(job_id), mode=request.mode.value)
 
         # Rebuild the preprocessor with this org's model override (if any).
@@ -138,7 +138,7 @@ class JobOrchestrator:
             lines_succeeded = sum(1 for r in results if r["success"])
             lines_failed = len(results) - lines_succeeded
 
-            completed_at = datetime.now(timezone.utc)
+            completed_at = datetime.now(UTC)
             job_result = JobResult(
                 job_id=job_id,
                 project_id=request.project_id,
@@ -183,7 +183,7 @@ class JobOrchestrator:
                 {
                     "status": "failed",
                     "error_message": str(e),
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "completed_at": datetime.now(UTC).isoformat(),
                 },
             )
             await self.webhook.send_job_failed(
@@ -533,7 +533,7 @@ class JobOrchestrator:
             total_cost = sum(r["cost"] for r in results)
             lines_succeeded = sum(1 for r in results if r["success"])
             lines_failed = len(results) - lines_succeeded
-            completed_at = datetime.now(timezone.utc)
+            completed_at = datetime.now(UTC)
 
             job_result = JobResult(
                 job_id=job_id,
@@ -576,7 +576,7 @@ class JobOrchestrator:
                 {
                     "status": "failed",
                     "error_message": str(e),
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "completed_at": datetime.now(UTC).isoformat(),
                 },
             )
             await self.webhook.send_job_failed(

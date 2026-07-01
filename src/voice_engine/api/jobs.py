@@ -1,6 +1,6 @@
 """Jobs API endpoints."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -30,7 +30,7 @@ router = APIRouter(dependencies=[Depends(verify_api_key)])
 async def create_job(request: CreateJobRequest) -> JobResponse:
     """Create a new audio generation job and enqueue it."""
     job_id = uuid4()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Skeleton: persistence omitted. Real impl writes to voice_engine_jobs first.
     enqueue_generate_audio_job(

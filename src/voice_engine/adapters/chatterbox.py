@@ -1,6 +1,5 @@
 """Chatterbox adapter - skeleton for future Phase 3 work."""
 
-from pathlib import Path
 
 from voice_engine.adapters.base import GenerateRequest, GenerateResult, TTSAdapter
 

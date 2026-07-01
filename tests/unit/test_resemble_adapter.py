@@ -1,10 +1,9 @@
 """Unit tests for ResembleAdapter — uses mocked httpx responses, no real API calls."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
-
 from voice_engine.adapters.base import GenerateRequest
 from voice_engine.adapters.resemble import ResembleAdapter
 from voice_engine.lib.errors import (

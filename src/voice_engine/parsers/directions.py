@@ -1,7 +1,7 @@
 """Identify stage directions in Hebrew text."""
 
 import re
-from typing import Pattern
+from re import Pattern
 
 DIRECTION_PATTERN: Pattern = re.compile(r"\*([^*]+)\*")
 
