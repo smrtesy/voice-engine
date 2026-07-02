@@ -36,6 +36,7 @@ from voice_engine.db.jobs import JobsRepository
 from voice_engine.db.lexicon import LexiconRepository
 from voice_engine.db.lines import LinesRepository
 from voice_engine.db.projects import ProjectsRepository
+from voice_engine.db.scripts import ScriptsRepository
 from voice_engine.models.domain import (
     Character,
     JobResult,
@@ -62,6 +63,7 @@ class JobOrchestrator:
         self.chars_repo = CharactersRepository()
         self.lexicon_repo = LexiconRepository()
         self.projects_repo = ProjectsRepository()
+        self.scripts_repo = ScriptsRepository()
         self.storage = StorageManager()
         # Preprocessor is built per-job in process_job so it can honor the
         # request's per-org llm_model override.
@@ -89,8 +91,10 @@ class JobOrchestrator:
             return await self._process_regenerate(job_id, request, started_at)
 
         try:
+            await self._set_stage(request, stage="fetching", status="processing")
             script_text = await self._fetch_script(request)
 
+            await self._set_stage(request, stage="parsing", status="processing")
             lines, warnings = parse_script(script_text)
             logger.info(
                 "script_parsed",
@@ -106,11 +110,29 @@ class JobOrchestrator:
             await self.lines_repo.create_batch(script_id, lines, request.org_id)
             characters = await self._build_characters(request, lines)
 
+            # Preprocessing runs only on lines whose speaker is cast to a voice
+            # (skipped speakers are dropped in process_batch), so that's the
+            # meaningful denominator for the progress bar.
+            preprocess_total = sum(
+                1 for line in lines if line.speaker_name in characters
+            )
+            await self._set_stage(
+                request, stage="preprocessing", current=0, total=preprocess_total,
+                status="processing",
+            )
+
             # Per-org pronunciation fixes (e.g. 770 → סעוון סעוונטי), merged with
             # the built-in defaults inside the preprocessor.
             pronunciations = await self.lexicon_repo.get_map(request.org_id)
+
+            async def _on_preprocess(done: int, total: int) -> None:
+                await self._set_stage(
+                    request, stage="preprocessing", current=done, total=total,
+                    status="processing",
+                )
+
             processed_lines = await self.preprocessor.process_batch(
-                lines, characters, pronunciations
+                lines, characters, pronunciations, progress_cb=_on_preprocess
             )
             for processed in processed_lines:
                 await self.lines_repo.update_llm_data(script_id, processed)
@@ -125,9 +147,24 @@ class JobOrchestrator:
                     len(processed_lines),
                 )
 
+            await self._set_stage(
+                request, stage="generating", current=0, total=len(processed_lines),
+                status="processing",
+            )
+
+            async def _on_generate(done: int, total: int, succeeded: int, failed: int) -> None:
+                # Live counts drive the stats card AND the progress bar. completed_lines
+                # is written here (authoritatively) rather than incremented via webhook.
+                await self._set_stage(
+                    request, stage="generating", current=done, total=total,
+                    status="processing",
+                    extra={"completed_lines": succeeded, "failed_lines": failed},
+                )
+
             try:
                 results = await self._generate_audio_for_lines(
-                    job_id, request, processed_lines, audio_segments, characters
+                    job_id, request, processed_lines, audio_segments, characters,
+                    progress_cb=_on_generate,
                 )
             finally:
                 if tmp_root:
@@ -166,6 +203,18 @@ class JobOrchestrator:
                     "progress": 100,
                 },
             )
+            # Authoritative final state on the script row (webhook-independent).
+            await self._set_stage(
+                request, stage=None, current=lines_succeeded,
+                total=len(processed_lines), status="audio_ready",
+                extra={
+                    "completed_lines": lines_succeeded,
+                    "failed_lines": lines_failed,
+                    "total_cost_usd": total_cost,
+                    "total_duration_seconds": total_duration,
+                    "audio_ready_at": completed_at.isoformat(),
+                },
+            )
             await self.webhook.send_job_completed(
                 request.org_id, request.project_id, job_id, job_result
             )
@@ -189,6 +238,7 @@ class JobOrchestrator:
                     "completed_at": datetime.now(UTC).isoformat(),
                 },
             )
+            await self._set_stage(request, stage=None, status="failed")
             await self.webhook.send_job_failed(
                 request.org_id, request.project_id, job_id, str(e)
             )
@@ -201,6 +251,34 @@ class JobOrchestrator:
             job_id,
             {"status": "running", "started_at": started_at.isoformat()},
         )
+
+    async def _set_stage(
+        self,
+        request: CreateJobRequest,
+        *,
+        stage: str | None,
+        current: int = 0,
+        total: int = 0,
+        status: str | None = None,
+        extra: dict | None = None,
+    ) -> None:
+        """Write live progress to the script row so the UI can show a stepper.
+
+        Best-effort and NON-FATAL: a progress write failure must never abort a
+        run (same principle as webhooks). Only meaningful when we have a real
+        script_id — the legacy project_id fallback points at a different table.
+        """
+        if not request.script_id:
+            return
+        fields: dict = {"stage": stage, "stage_current": current, "stage_total": total}
+        if status is not None:
+            fields["status"] = status
+        if extra:
+            fields.update(extra)
+        try:
+            await self.scripts_repo.update(request.script_id, fields)
+        except Exception as e:  # noqa: BLE001 — progress is best-effort
+            logger.warning("script_progress_update_failed", error=str(e))
 
     async def _fetch_script(self, request: CreateJobRequest) -> str:
         if not request.google_doc_id:
@@ -293,9 +371,33 @@ class JobOrchestrator:
         processed_lines: list[ProcessedLine],
         audio_segments: list[Path] | None,
         characters: dict[str, Character],
+        progress_cb=None,
     ) -> list[dict]:
         adapter = get_adapter(request.adapter)
         semaphore = asyncio.Semaphore(self.settings.max_concurrent_lines)
+
+        total = len(processed_lines)
+        counter = {"done": 0, "succeeded": 0, "failed": 0}
+        counter_lock = asyncio.Lock()
+
+        async def _record_and_report(result: dict) -> None:
+            # Lines are generated concurrently; keep the running counts consistent
+            # and push a fresh progress snapshot to the UI as each one lands.
+            if progress_cb is None:
+                return
+            # Report INSIDE the lock so concurrent completions persist snapshots
+            # in monotonic order (a later await can't overtake an earlier one and
+            # briefly lower stage_current).
+            async with counter_lock:
+                counter["done"] += 1
+                # A skipped speaker is neither a success nor a hard failure.
+                if result.get("success"):
+                    counter["succeeded"] += 1
+                elif not result.get("skipped"):
+                    counter["failed"] += 1
+                await progress_cb(
+                    counter["done"], total, counter["succeeded"], counter["failed"]
+                )
 
         async def process_one(idx: int, line: ProcessedLine) -> dict:
             async with semaphore:
@@ -310,9 +412,17 @@ class JobOrchestrator:
                     if audio_segments and idx < len(audio_segments)
                     else None
                 )
-                return await self._generate_single_line(
-                    job_id, request, line, segment, adapter, characters
-                )
+                # Report in finally so an unexpected raise (caught by gather
+                # below) still advances the progress counter — otherwise the bar
+                # would stall short of 100% until the final authoritative write.
+                result = {"success": False, "error": "unknown", "duration": 0.0, "cost": 0.0}
+                try:
+                    result = await self._generate_single_line(
+                        job_id, request, line, segment, adapter, characters
+                    )
+                    return result
+                finally:
+                    await _record_and_report(result)
 
         tasks = [process_one(i, line) for i, line in enumerate(processed_lines)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -530,9 +640,24 @@ class JobOrchestrator:
             if not lines:
                 raise RuntimeError("No matching lines to regenerate")
 
+            # A redo only re-synthesizes a handful of lines — it doesn't fetch /
+            # parse / preprocess — so use a distinct "regenerating" stage that the
+            # UI renders as a simple progress line, not the full pipeline stepper.
+            # Don't touch the script-wide completed_lines/failed_lines counts here.
+            await self._set_stage(
+                request, stage="regenerating", current=0, total=len(lines),
+                status="processing",
+            )
             characters = await self._build_characters(request, lines)
+
+            async def _on_regenerate(done: int, total: int, succeeded: int, failed: int) -> None:
+                await self._set_stage(
+                    request, stage="regenerating", current=done, total=total,
+                    status="processing",
+                )
+
             results = await self._generate_audio_for_lines(
-                job_id, request, lines, None, characters
+                job_id, request, lines, None, characters, progress_cb=_on_regenerate
             )
 
             total_duration = sum(r["duration"] for r in results)
@@ -567,6 +692,9 @@ class JobOrchestrator:
                     "progress": 100,
                 },
             )
+            # Clear the redo indicator. The script keeps its prior audio_ready
+            # state and script-wide counts (a partial redo mustn't reset them).
+            await self._set_stage(request, stage=None, status="audio_ready")
             await self.webhook.send_job_completed(
                 request.org_id, request.project_id, job_id, job_result
             )
@@ -588,6 +716,10 @@ class JobOrchestrator:
                     "completed_at": datetime.now(UTC).isoformat(),
                 },
             )
+            # A failed redo shouldn't nuke the whole script to "failed" — its
+            # existing audio still stands. Clear the indicator back to audio_ready;
+            # the specific line(s) carry their own failure state.
+            await self._set_stage(request, stage=None, status="audio_ready")
             await self.webhook.send_job_failed(
                 request.org_id, request.project_id, job_id, str(e)
             )

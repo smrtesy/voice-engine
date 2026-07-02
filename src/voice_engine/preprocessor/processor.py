@@ -196,8 +196,10 @@ class LLMPreprocessor:
         lines: list[ScriptLine],
         characters: dict[str, Character],
         pronunciations: dict[str, str] | None = None,
+        progress_cb=None,
     ) -> list[ProcessedLine]:
         processed: list[ProcessedLine] = []
+        total = sum(1 for line in lines if line.speaker_name in characters)
         for i, line in enumerate(lines):
             character = characters.get(line.speaker_name)
             if not character:
@@ -212,5 +214,7 @@ class LLMPreprocessor:
             processed.append(
                 await self.process_line(line, character, context, pronunciations)
             )
+            if progress_cb is not None:
+                await progress_cb(len(processed), total)
 
         return processed
