@@ -93,6 +93,13 @@ class LLMPreprocessor:
         )
         user_message = build_user_message(line.text_clean, line.directions)
 
+        # A single line's LLM call must never abort the whole job. On any API
+        # failure we fall back to the raw cleaned text (no niqqud, no LLM
+        # emotion) and keep going — script stage directions still drive emotion
+        # below. The orchestrator's contract is "per-line failures are recorded
+        # and the job continues"; raising here broke that and let one dead
+        # model / one transient 529 nuke an 85-line run.
+        response = None
         try:
             response = await self.client.messages.create(
                 model=self.model,
@@ -103,29 +110,33 @@ class LLMPreprocessor:
             )
         except Exception as e:
             logger.error("llm_call_failed", line_number=line.line_number, error=str(e))
-            raise
 
-        response_text = response.content[0].text.strip()
-        if response_text.startswith("```"):
-            response_text = response_text.split("```")[1]
-            if response_text.startswith("json"):
-                response_text = response_text[4:]
-            response_text = response_text.strip()
+        _fallback_output = {
+            "text_for_tts": line.text_clean,
+            "emotion": "neutral",
+            "emotion_source": "none",
+            "resemble_prompt": None,
+        }
 
-        try:
-            llm_output = json.loads(response_text)
-        except json.JSONDecodeError:
-            logger.error(
-                "llm_invalid_json",
-                line_number=line.line_number,
-                response=response_text[:500],
-            )
-            llm_output = {
-                "text_for_tts": line.text_clean,
-                "emotion": "neutral",
-                "emotion_source": "none",
-                "resemble_prompt": None,
-            }
+        if response is None:
+            llm_output = _fallback_output
+        else:
+            response_text = response.content[0].text.strip()
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+                response_text = response_text.strip()
+
+            try:
+                llm_output = json.loads(response_text)
+            except json.JSONDecodeError:
+                logger.error(
+                    "llm_invalid_json",
+                    line_number=line.line_number,
+                    response=response_text[:500],
+                )
+                llm_output = _fallback_output
 
         # Plain Hebrew, no niqqud — Ultra vocalizes internally (niqqud harms it).
         text_for_tts = strip_niqqud(llm_output.get("text_for_tts") or line.text_clean).strip()
@@ -157,10 +168,16 @@ class LLMPreprocessor:
             emotion=emotion,
             emotion_source=emotion_source,
             tags=[t["tag"] for t in tags],
-            tokens_used=(response.usage.input_tokens + response.usage.output_tokens),
+            tokens_used=(
+                response.usage.input_tokens + response.usage.output_tokens
+                if response is not None
+                else 0
+            ),
+            llm_ok=response is not None,
         )
 
-        _log_ai_usage(self.model, response.usage, ref_id=str(line.line_number))
+        if response is not None:
+            _log_ai_usage(self.model, response.usage, ref_id=str(line.line_number))
 
         return ProcessedLine(
             **line.model_dump(),

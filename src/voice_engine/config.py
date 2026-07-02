@@ -43,7 +43,10 @@ class Settings(BaseSettings):
 
     # Anthropic
     anthropic_api_key: str
-    llm_model: str = "claude-sonnet-4-20250514"
+    # claude-sonnet-4-20250514 was retired; the account now serves the 4.x line
+    # (same models the mrtesy app uses). A stale default here 404s every line
+    # and kills the whole job, so keep this current.
+    llm_model: str = "claude-sonnet-4-6"
     llm_max_tokens: int = 2000
     llm_temperature: float = 0.3
 
