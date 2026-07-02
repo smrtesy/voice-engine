@@ -135,6 +135,20 @@ class LinesRepository:
             }
         ).eq("script_id", str(script_id)).eq("line_number", line_number).execute()
 
+    async def mark_skipped(
+        self,
+        script_id: UUID,
+        line_number: int,
+        reason: str,
+    ) -> None:
+        client = get_supabase()
+        client.table(self.TABLE).update(
+            {
+                "status": "skipped",
+                "error_message": reason,
+            }
+        ).eq("script_id", str(script_id)).eq("line_number", line_number).execute()
+
     async def get_id(self, script_id: UUID, line_number: int) -> UUID | None:
         client = get_supabase()
         result = (

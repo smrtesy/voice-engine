@@ -136,7 +136,10 @@ class JobOrchestrator:
             total_duration = sum(r["duration"] for r in results)
             total_cost = sum(r["cost"] for r in results)
             lines_succeeded = sum(1 for r in results if r["success"])
-            lines_failed = len(results) - lines_succeeded
+            lines_skipped = sum(
+                1 for r in results if not r["success"] and r.get("skipped")
+            )
+            lines_failed = len(results) - lines_succeeded - lines_skipped
 
             completed_at = datetime.now(UTC)
             job_result = JobResult(
@@ -146,7 +149,7 @@ class JobOrchestrator:
                 total_lines=len(processed_lines),
                 lines_completed=lines_succeeded,
                 lines_failed=lines_failed,
-                lines_skipped=0,
+                lines_skipped=lines_skipped,
                 total_duration_seconds=total_duration,
                 total_cost_usd=total_cost,
                 started_at=started_at,
@@ -337,15 +340,18 @@ class JobOrchestrator:
         """Generate audio for one line and upload it. Returns a result dict."""
         script_id = request.script_id or request.project_id
 
-        # Resolve the cast voice for this line's speaker.
+        # Resolve the cast voice for this line's speaker. No voice → the speaker
+        # was intentionally skipped (or left uncast); mark the line skipped, not
+        # failed, so "cast one, skip the rest" doesn't report failures.
         character = characters.get(line.speaker_name)
         if not character or not character.resemble_voice_id:
-            await self.lines_repo.mark_failed(
-                script_id, line.line_number, "no voice cast for this speaker"
+            await self.lines_repo.mark_skipped(
+                script_id, line.line_number, "speaker skipped (no voice cast)"
             )
             return {
                 "success": False,
-                "error": f"no voice cast for speaker '{line.speaker_name}'",
+                "skipped": True,
+                "error": f"speaker '{line.speaker_name}' skipped",
                 "duration": 0.0,
                 "cost": 0.0,
             }
@@ -532,7 +538,10 @@ class JobOrchestrator:
             total_duration = sum(r["duration"] for r in results)
             total_cost = sum(r["cost"] for r in results)
             lines_succeeded = sum(1 for r in results if r["success"])
-            lines_failed = len(results) - lines_succeeded
+            lines_skipped = sum(
+                1 for r in results if not r["success"] and r.get("skipped")
+            )
+            lines_failed = len(results) - lines_succeeded - lines_skipped
             completed_at = datetime.now(UTC)
 
             job_result = JobResult(
@@ -542,7 +551,7 @@ class JobOrchestrator:
                 total_lines=len(lines),
                 lines_completed=lines_succeeded,
                 lines_failed=lines_failed,
-                lines_skipped=0,
+                lines_skipped=lines_skipped,
                 total_duration_seconds=total_duration,
                 total_cost_usd=total_cost,
                 started_at=started_at,
