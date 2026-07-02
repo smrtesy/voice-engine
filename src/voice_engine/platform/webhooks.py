@@ -29,12 +29,35 @@ class WebhookSender:
         message = f"{timestamp}.{payload}".encode()
         return hmac.new(self.signing_secret, message, hashlib.sha256).hexdigest()
 
+    async def send(self, event: WebhookEvent) -> bool:
+        """Deliver a webhook, but NEVER let a delivery failure abort the caller.
+
+        Webhooks are best-effort progress notifications. A failed or
+        unreachable callback (wrong SMRTESY_API_URL, 404, timeout, signature
+        mismatch, smrtesy down) must not crash audio generation. We retry a
+        few times inside ``_deliver`` and then swallow the final error here,
+        returning ``False`` so callers can log-and-continue. Previously the
+        retry exception propagated out of ``send_job_started`` (which runs
+        outside the orchestrator's try block) and killed the whole job before
+        a single line was produced.
+        """
+        try:
+            return await self._deliver(event)
+        except Exception as exc:  # noqa: BLE001 — deliberately non-fatal
+            logger.error(
+                "webhook_giveup",
+                event_type=event.event_type.value,
+                job_id=str(event.job_id),
+                error=str(exc),
+            )
+            return False
+
     @retry(
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=2, min=10, max=600),
-        reraise=False,
+        reraise=True,
     )
-    async def send(self, event: WebhookEvent) -> bool:
+    async def _deliver(self, event: WebhookEvent) -> bool:
         timestamp = int(time.time())
         payload = event.model_dump_json()
         signature = self._sign(payload, timestamp)
