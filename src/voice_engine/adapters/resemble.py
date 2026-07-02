@@ -255,11 +255,28 @@ class ResembleAdapter(TTSAdapter):
         voice_uuid = response.json()["item"]["uuid"]
         logger.info("resemble_voice_created", voice_uuid=voice_uuid, name=name)
 
-        # A rapid clone finishes fast; wait a bounded window, then upgrade.
-        await self._await_finished(voice_uuid, timeout_s=60)
+        # REQUIRED: creating a voice only registers it — training does not start
+        # until you BUILD it. Without this the voice sits at "initializing" with
+        # no dataset forever. Applies to rapid voices too.
+        await self._build_voice(voice_uuid)
+
+        # A rapid clone trains fast; wait a bounded window, then upgrade.
+        await self._await_finished(voice_uuid, timeout_s=120)
         await self._upgrade_voice(voice_uuid)
 
         return voice_uuid
+
+    async def _build_voice(self, voice_uuid: str, fill: bool = False) -> None:
+        """Kick off training for a created voice (POST /voices/{uuid}/build).
+        Fatal on failure — a voice that isn't built never becomes usable."""
+        try:
+            response = await self.client.post(
+                f"/voices/{voice_uuid}/build", json={"fill": fill}
+            )
+            response.raise_for_status()
+            logger.info("resemble_voice_build_started", voice_uuid=voice_uuid)
+        except httpx.HTTPStatusError as e:
+            self._raise_for_status(e)
 
     async def _await_finished(self, voice_uuid: str, timeout_s: float = 60.0) -> bool:
         """Poll a voice until status == 'finished' or timeout. Best-effort."""
