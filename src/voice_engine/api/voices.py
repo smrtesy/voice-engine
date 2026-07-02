@@ -43,9 +43,16 @@ def _cache_fresh(kind: str) -> bool:
     )
 
 
-async def _concat_parts_to_dataset(storage: StorageManager, urls: list[str]) -> str:
-    """Concatenate multiple recording parts into one dataset file (capped at the
-    rapid budget), stage it in storage, and return a signed URL for dataset_url."""
+# Resemble rejects dataset files over 25 MB — stay safely under it.
+_MAX_DATASET_BYTES = 24 * 1024 * 1024
+
+
+async def _build_dataset(storage: StorageManager, urls: list[str]) -> str:
+    """Build a single clone-dataset file from one or more recording parts:
+    concatenate, cap at the rapid duration budget, and DOWNSAMPLE to mono /
+    22.05 kHz / 16-bit. That keeps the file well under Resemble's 25 MB limit
+    (~2.6 MB per minute) while preserving voice identity for cloning. Stage it
+    in storage and return a signed URL for dataset_url."""
     from pydub import AudioSegment  # noqa: PLC0415 - heavy import, defer
 
     max_ms = int(get_settings().resemble_clone_max_seconds * 1000)
@@ -59,9 +66,18 @@ async def _concat_parts_to_dataset(storage: StorageManager, urls: list[str]) -> 
             if len(combined) >= max_ms:
                 break
         combined = combined[:max_ms]
+        # Normalize: mono, 22.05 kHz, 16-bit — enough for a faithful clone and
+        # a fraction of the size of 48 kHz/24-bit stereo source recordings.
+        combined = combined.set_channels(1).set_frame_rate(22050).set_sample_width(2)
+
         out = tmp_dir / "dataset.wav"
         combined.export(str(out), format="wav")
         data = out.read_bytes()
+        # Safety net: if an unusually long cap still exceeds the limit, trim.
+        while len(data) > _MAX_DATASET_BYTES and len(combined) > 30_000:
+            combined = combined[: int(len(combined) * 0.8)]
+            combined.export(str(out), format="wav")
+            data = out.read_bytes()
 
     storage_path = f"clone_datasets/{uuid4().hex}.wav"
     storage._upload_bytes(storage_path, data, "audio/wav")
@@ -117,20 +133,17 @@ async def clone_voice(request: CreateVoiceRequest) -> VoiceCreatedResponse:
             detail="sample_audio_url or sample_audio_urls is required",
         )
 
-    # Resemble's dataset_url method takes a single audio file (rapid: ~10s-3min)
-    # sent whole — no 12s splitting. One part → pass its URL straight through.
-    # Multiple parts → concatenate into one file, capped at the rapid budget.
-    if len(urls) == 1:
-        dataset_url = urls[0]
-    else:
-        try:
-            dataset_url = await _concat_parts_to_dataset(storage, urls)
-        except Exception as e:
-            logger.error("sample_concat_failed", error=str(e))
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to combine voice sample parts: {e}",
-            ) from e
+    # Always build a normalized dataset (concat + downsample + size cap) so the
+    # file stays under Resemble's 25 MB limit — 48 kHz/24-bit source recordings
+    # blow past it in ~50s otherwise. Applies to single and multi-file uploads.
+    try:
+        dataset_url = await _build_dataset(storage, urls)
+    except Exception as e:
+        logger.error("dataset_build_failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to prepare voice sample: {e}",
+        ) from e
 
     try:
         voice_id = await adapter.create_voice_clone(
