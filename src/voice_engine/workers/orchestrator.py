@@ -579,6 +579,25 @@ class JobOrchestrator:
             else None,
         }
 
+        # On a redo, capture the clip we're about to replace BEFORE mark_completed
+        # overwrites output_audio_path — smrtesy backfills it as a take so a line
+        # first rendered before take-history existed keeps its old version. Only
+        # for regenerate: a full generation's line was pending (no prior clip).
+        previous_take: dict | None = None
+        if request.job_type == "regenerate_line":
+            prev = await self.lines_repo.get_output_row(script_id, line.line_number)
+            old_path = (prev or {}).get("output_audio_path")
+            if old_path and old_path != storage_path:
+                prev_req = (prev or {}).get("resemble_request") or {}
+                previous_take = {
+                    "output_audio_path": old_path,
+                    "duration_seconds": (prev or {}).get("output_duration_seconds"),
+                    "cost_usd": (prev or {}).get("generation_cost_usd"),
+                    "text_used": (prev or {}).get("tts_body")
+                    or (prev or {}).get("text_for_tts"),
+                    "model": prev_req.get("model") if isinstance(prev_req, dict) else None,
+                }
+
         await self.lines_repo.mark_completed(
             script_id,
             line.line_number,
@@ -592,6 +611,9 @@ class JobOrchestrator:
             tts_body=line.tts_body,
             tags=line.tags,
             text_pointed=line.text_for_tts if line.is_pointed else None,
+            # Keep emotion in sync (a "re-analyze tone" redo picks a fresh one).
+            emotion=line.emotion,
+            emotion_source=line.emotion_source,
         )
 
         # Find the line_id we wrote (so the webhook can carry it).
@@ -614,6 +636,8 @@ class JobOrchestrator:
                 # records these on the take history + cost ledger.
                 "model": gen_req.model,
                 "text_used": result.adapter_metadata.get("body", gen_req.tts_body),
+                # The prior clip (redo only) so smrtesy can backfill it as a take.
+                "previous_take": previous_take,
             },
         )
 

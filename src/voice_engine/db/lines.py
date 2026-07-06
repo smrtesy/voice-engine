@@ -92,6 +92,8 @@ class LinesRepository:
         tts_body: str | None = None,
         tags: list[dict] | None = None,
         text_pointed: str | None = None,
+        emotion: str | None = None,
+        emotion_source: str | None = None,
     ) -> None:
         client = get_supabase()
         fields: dict = {
@@ -116,9 +118,35 @@ class LinesRepository:
             fields["tts_body"] = tts_body
         if tags is not None:
             fields["tags"] = tags
+        # Keep the emotion columns in sync too — a "re-analyze tone" regenerate
+        # picks a fresh emotion, and the UI badge reads these columns; without
+        # this they'd keep showing the pre-reprocess emotion.
+        if emotion is not None:
+            fields["emotion"] = emotion
+        if emotion_source is not None:
+            fields["emotion_source"] = emotion_source
         client.table(self.TABLE).update(fields).eq(
             "script_id", str(script_id)
         ).eq("line_number", line_number).execute()
+
+    async def get_output_row(
+        self, script_id: UUID, line_number: int
+    ) -> dict | None:
+        """The current render's stored fields, read BEFORE mark_completed
+        overwrites them — used to preserve the prior clip as a take."""
+        client = get_supabase()
+        result = (
+            client.table(self.TABLE)
+            .select(
+                "output_audio_path, output_duration_seconds, "
+                "generation_cost_usd, tts_body, text_for_tts, resemble_request"
+            )
+            .eq("script_id", str(script_id))
+            .eq("line_number", line_number)
+            .maybe_single()
+            .execute()
+        )
+        return result.data or None
 
     async def get_lines_by_numbers(
         self, script_id: UUID, line_numbers: list[int]
