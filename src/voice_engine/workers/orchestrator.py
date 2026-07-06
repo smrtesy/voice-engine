@@ -37,6 +37,7 @@ from voice_engine.db.lexicon import LexiconRepository
 from voice_engine.db.lines import LinesRepository
 from voice_engine.db.projects import ProjectsRepository
 from voice_engine.db.scripts import ScriptsRepository
+from voice_engine.db.takes import LineTakesRepository
 from voice_engine.dictionaries.pronunciations import apply_pronunciations
 from voice_engine.dictionaries.resemble_tags import compose_body
 from voice_engine.models.domain import (
@@ -62,6 +63,7 @@ class JobOrchestrator:
         self.settings = get_settings()
         self.jobs_repo = JobsRepository()
         self.lines_repo = LinesRepository()
+        self.takes_repo = LineTakesRepository()
         self.chars_repo = CharactersRepository()
         self.lexicon_repo = LexiconRepository()
         self.projects_repo = ProjectsRepository()
@@ -618,6 +620,33 @@ class JobOrchestrator:
 
         # Find the line_id we wrote (so the webhook can carry it).
         line_id = await self.lines_repo.get_id(script_id, line.line_number)
+
+        # Record this render as a take — directly, so history is reliable even
+        # when the smrtesy webhook never lands. On a redo, first backfill the
+        # clip we just replaced IF the line has no takes yet (a line first
+        # rendered before take-history existed), so its old version stays.
+        if line_id:
+            if previous_take and await self.takes_repo.count_for_line(line_id) == 0:
+                await self.takes_repo.record(
+                    org_id=request.org_id,
+                    line_id=line_id,
+                    script_id=request.script_id,
+                    text_used=previous_take.get("text_used"),
+                    model=previous_take.get("model"),
+                    output_audio_path=previous_take["output_audio_path"],
+                    duration_seconds=previous_take.get("duration_seconds"),
+                    cost_usd=previous_take.get("cost_usd"),
+                )
+            await self.takes_repo.record(
+                org_id=request.org_id,
+                line_id=line_id,
+                script_id=request.script_id,
+                text_used=result.adapter_metadata.get("body", gen_req.tts_body),
+                model=gen_req.model,
+                output_audio_path=storage_path,
+                duration_seconds=result.duration_seconds,
+                cost_usd=result.cost_usd,
+            )
 
         await self.webhook.send_line_completed(
             request.org_id,
