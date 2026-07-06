@@ -54,6 +54,11 @@ class CreateJobRequest(BaseModel):
     # would overwrite it. Tone tags already on the line still wrap the text.
     line_overrides: list[dict] = []
 
+    # For regenerate_line: line numbers to RE-RUN through the LLM (fresh emotion
+    # + tone tags + pronunciation), instead of re-using the stored ProcessedLine.
+    # When a line is also in line_overrides, the edited text is the LLM's input.
+    reprocess_line_numbers: list[int] = []
+
     # Post-production DSP on each rendered clip (off by default).
     postprocess_enabled: bool = False
     postprocess_compress: bool = True

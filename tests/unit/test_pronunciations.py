@@ -95,6 +95,36 @@ def test_build_glossary_empty_when_no_entries():
     assert build_glossary([]) == ""
 
 
+# ─── per-word language preference ────────────────────────────────────────────
+
+_DUAL_LEX = [
+    {"word": "בית", "replacement": "beit", "language": "en"},
+    {"word": "בית", "replacement": "ביית", "language": "he"},
+]
+
+
+def test_language_prefers_hebrew_variant():
+    text, _ = apply_pronunciations("בית", _DUAL_LEX, "he")
+    assert text == "ביית"
+
+
+def test_language_prefers_latin_variant():
+    text, _ = apply_pronunciations("בית", _DUAL_LEX, "en")
+    assert text == "beit"
+
+
+def test_language_none_still_applies_some_variant():
+    # A word with only a non-matching-language entry must still apply (fallback),
+    # not be dropped.
+    text, _ = apply_pronunciations("בית", [{"word": "בית", "replacement": "beit", "language": "en"}], "he")
+    assert text == "beit"
+
+
+def test_glossary_shows_language_matching_variant():
+    assert "beit" in build_glossary(_DUAL_LEX, "en")
+    assert "ביית" in build_glossary(_DUAL_LEX, "he")
+
+
 # ─── per-language variant selection ──────────────────────────────────────────
 
 def _bilingual():

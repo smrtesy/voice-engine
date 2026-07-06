@@ -695,10 +695,38 @@ class JobOrchestrator:
                 overrides[ln] = o.get("text_for_tts") or ""
             pronunciations = await self._resolve_pronunciations(request)
             # Resolve voices up-front so the pronunciation refresh can prefer the
-            # lexicon variant (Hebrew respelling vs Latin) matching each voice.
+            # lexicon variant (Hebrew respelling vs Latin) matching each voice,
+            # and so reprocess lines can be run through the LLM with their voice.
             characters = await self._build_characters(request, lines)
+            reprocess: set[int] = {int(n) for n in (request.reprocess_line_numbers or [])}
+
+            final_lines: list[ProcessedLine] = []
             for line in lines:
                 override_text = (overrides.get(line.line_number) or "").strip()
+                character = characters.get(line.speaker_name)
+
+                # RE-ANALYZE TONE: re-run the LLM for this line (fresh emotion +
+                # tone tags + pronunciation). The edited text, if any, is the
+                # model's input; otherwise the stored cleaned text is. Needs a
+                # cast voice — without one the line is skipped downstream anyway.
+                if line.line_number in reprocess and character:
+                    src = override_text or line.text_clean or line.text_for_tts or ""
+                    src_line = ScriptLine(
+                        line_number=line.line_number,
+                        scene_title=line.scene_title,
+                        speaker_name=line.speaker_name,
+                        text_raw=line.text_raw or src,
+                        text_clean=src,
+                        directions=line.directions or [],
+                        is_pointed=line.is_pointed,
+                    )
+                    final_lines.append(
+                        await self.preprocessor.process_line(
+                            src_line, character, None, pronunciations
+                        )
+                    )
+                    continue
+
                 if override_text:
                     # The user authored the EXACT text to speak (prefilled from
                     # tts_body, so any tone tags are already inside it). Send it
@@ -712,7 +740,6 @@ class JobOrchestrator:
                     line.is_pointed = False
                     line.pronunciation_subs = []
                 else:
-                    character = characters.get(line.speaker_name)
                     new_text, subs = apply_pronunciations(
                         line.text_for_tts,
                         pronunciations,
@@ -722,6 +749,9 @@ class JobOrchestrator:
                         line.text_for_tts = new_text
                         line.tts_body = compose_body(new_text, line.tags)
                         line.pronunciation_subs = subs
+                final_lines.append(line)
+
+            lines = final_lines
 
             # A redo only re-synthesizes a handful of lines — it doesn't fetch /
             # parse / preprocess — so use a distinct "regenerating" stage that the
