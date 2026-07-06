@@ -37,6 +37,8 @@ from voice_engine.db.lexicon import LexiconRepository
 from voice_engine.db.lines import LinesRepository
 from voice_engine.db.projects import ProjectsRepository
 from voice_engine.db.scripts import ScriptsRepository
+from voice_engine.dictionaries.pronunciations import apply_pronunciations
+from voice_engine.dictionaries.resemble_tags import compose_body
 from voice_engine.models.domain import (
     Character,
     JobResult,
@@ -121,9 +123,11 @@ class JobOrchestrator:
                 status="processing",
             )
 
-            # Per-org pronunciation fixes (e.g. 770 → סעוון סעוונטי), merged with
-            # the built-in defaults inside the preprocessor.
-            pronunciations = await self.lexicon_repo.get_map(request.org_id)
+            # Per-org pronunciation fixes, merged with the built-in defaults
+            # inside the preprocessor. smrtesy passes the org lexicon in the
+            # payload (notation-agnostic {word, replacement, language}); fall
+            # back to reading it from the DB when the payload omits it.
+            pronunciations = await self._resolve_pronunciations(request)
 
             async def _on_preprocess(done: int, total: int) -> None:
                 await self._set_stage(
@@ -293,6 +297,19 @@ class JobOrchestrator:
             tab_id=request.google_doc_tab_id,
             tab_title=request.google_doc_tab_title,
         )
+
+    async def _resolve_pronunciations(
+        self, request: CreateJobRequest
+    ) -> list[dict] | dict[str, str]:
+        """The org pronunciation lexicon for this job.
+
+        Prefer the payload smrtesy sent (list of {word, replacement, language});
+        fall back to reading the DB map when the payload is empty so older
+        callers still get per-org fixes.
+        """
+        if request.pronunciation:
+            return request.pronunciation
+        return await self.lexicon_repo.get_map(request.org_id)
 
     async def _build_characters(
         self,
@@ -569,6 +586,12 @@ class JobOrchestrator:
             result.duration_seconds,
             result.cost_usd,
             resemble_request=resemble_request,
+            # Keep the row's text in sync with what was actually synthesized,
+            # including the pointed (niqqud) view so it can't drift.
+            text_for_tts=line.text_for_tts,
+            tts_body=line.tts_body,
+            tags=line.tags,
+            text_pointed=line.text_for_tts if line.is_pointed else None,
         )
 
         # Find the line_id we wrote (so the webhook can carry it).
@@ -583,9 +606,14 @@ class JobOrchestrator:
                 "script_id": str(script_id),
                 "line_number": line.line_number,
                 "speaker_name": line.speaker_name,
+                # Unique per-take path (never overwrites the prior take).
                 "output_audio_path": storage_path,
                 "duration_seconds": result.duration_seconds,
                 "cost_usd": result.cost_usd,
+                # The model actually used and the exact text sent — smrtesy
+                # records these on the take history + cost ledger.
+                "model": gen_req.model,
+                "text_used": result.adapter_metadata.get("body", gen_req.tts_body),
             },
         )
 
@@ -597,11 +625,18 @@ class JobOrchestrator:
 
     @staticmethod
     def _output_filename(request: CreateJobRequest, line: ProcessedLine) -> str:
-        """Output WAV name: "{code}_{line:03d}.wav" when a program code is set,
-        else the legacy "{line:03d}_{speaker}.wav"."""
+        """Output WAV name, UNIQUE PER TAKE so a re-render never overwrites the
+        previous clip (smrtesy keeps every take as history).
+
+        A short random token is appended: "{code}_{line:03d}_{take}.wav" (or the
+        legacy "{line:03d}_{speaker}_{take}.wav"). The line's current audio is
+        whichever take was written last; the archive/download flows rename back
+        to the clean "{code}_{line:03d}.wav" from the line number, so the take
+        token never leaks into delivered files."""
+        take = uuid4().hex[:8]
         if request.code:
-            return f"{request.code}_{line.line_number:03d}.wav"
-        return f"{line.line_number:03d}_{line.speaker_name}.wav"
+            return f"{request.code}_{line.line_number:03d}_{take}.wav"
+        return f"{line.line_number:03d}_{line.speaker_name}_{take}.wav"
 
     # ─── Regenerate specific lines ───────────────────────────────────────────
 
@@ -640,6 +675,54 @@ class JobOrchestrator:
             if not lines:
                 raise RuntimeError("No matching lines to regenerate")
 
+            # Apply manual per-line text edits and/or refresh pronunciation.
+            # A line with an override is synthesized from that text VERBATIM —
+            # no Google-Doc fetch, no LLM (regenerate never runs the LLM anyway,
+            # it re-uses the stored ProcessedLine). Tone tags already on the line
+            # keep wrapping the text. Lines WITHOUT an edit get a deterministic
+            # pronunciation refresh so a newly-added lexicon rule takes effect.
+            # line_number is coerced to int so a payload sending it as a string
+            # ("5") still matches — otherwise the edit would silently fall
+            # through to the pronunciation-refresh path and be lost.
+            overrides: dict[int, str] = {}
+            for o in request.line_overrides:
+                if not isinstance(o, dict) or o.get("line_number") is None:
+                    continue
+                try:
+                    ln = int(o["line_number"])
+                except (TypeError, ValueError):
+                    continue
+                overrides[ln] = o.get("text_for_tts") or ""
+            pronunciations = await self._resolve_pronunciations(request)
+            # Resolve voices up-front so the pronunciation refresh can prefer the
+            # lexicon variant (Hebrew respelling vs Latin) matching each voice.
+            characters = await self._build_characters(request, lines)
+            for line in lines:
+                override_text = (overrides.get(line.line_number) or "").strip()
+                if override_text:
+                    # The user authored the EXACT text to speak (prefilled from
+                    # tts_body, so any tone tags are already inside it). Send it
+                    # verbatim — do NOT re-wrap with tags (that would double
+                    # them) and do NOT re-apply pronunciation. Emotion tags are
+                    # now considered baked into the edited body, and the edited
+                    # text supersedes any earlier pointed (niqqud) version.
+                    line.text_for_tts = override_text
+                    line.tts_body = override_text
+                    line.tags = []
+                    line.is_pointed = False
+                    line.pronunciation_subs = []
+                else:
+                    character = characters.get(line.speaker_name)
+                    new_text, subs = apply_pronunciations(
+                        line.text_for_tts,
+                        pronunciations,
+                        character.language if character else None,
+                    )
+                    if subs:
+                        line.text_for_tts = new_text
+                        line.tts_body = compose_body(new_text, line.tags)
+                        line.pronunciation_subs = subs
+
             # A redo only re-synthesizes a handful of lines — it doesn't fetch /
             # parse / preprocess — so use a distinct "regenerating" stage that the
             # UI renders as a simple progress line, not the full pipeline stepper.
@@ -648,7 +731,6 @@ class JobOrchestrator:
                 request, stage="regenerating", current=0, total=len(lines),
                 status="processing",
             )
-            characters = await self._build_characters(request, lines)
 
             async def _on_regenerate(done: int, total: int, succeeded: int, failed: int) -> None:
                 await self._set_stage(

@@ -7,7 +7,7 @@ import structlog
 from voice_engine.config import get_settings
 from voice_engine.dictionaries.emotion_directions import EMOTION_DIRECTIONS
 from voice_engine.dictionaries.hebrew_names import HEBREW_NAME_FIXES
-from voice_engine.dictionaries.pronunciations import apply_pronunciations
+from voice_engine.dictionaries.pronunciations import apply_pronunciations, build_glossary
 from voice_engine.dictionaries.resemble_tags import compose_body, tags_for_emotion
 from voice_engine.lib.hebrew_utils import strip_niqqud
 from voice_engine.models.domain import Character, ProcessedLine, ScriptLine
@@ -80,7 +80,7 @@ class LLMPreprocessor:
         line: ScriptLine,
         character: Character,
         context_lines: list[ScriptLine] | None = None,
-        pronunciations: dict[str, str] | None = None,
+        pronunciations: dict[str, str] | list[dict] | None = None,
     ) -> ProcessedLine:
         system_prompt = build_system_prompt(
             character_name=character.name,
@@ -90,6 +90,11 @@ class LLMPreprocessor:
             ],
             name_dictionary=HEBREW_NAME_FIXES,
             emotion_dictionary=EMOTION_DIRECTIONS,
+            # Hand the org glossary to the model so it can apply pronunciation
+            # rules context-aware. A deterministic pass below is the safety net.
+            # Prefer the variant (Hebrew respelling vs Latin) matching this
+            # voice's language.
+            pronunciation_glossary=build_glossary(pronunciations, character.language),
         )
         user_message = build_user_message(line.text_clean, line.directions)
 
@@ -141,8 +146,14 @@ class LLMPreprocessor:
         # Plain Hebrew, no niqqud — Ultra vocalizes internally (niqqud harms it).
         text_for_tts = strip_niqqud(llm_output.get("text_for_tts") or line.text_clean).strip()
 
-        # Fix known mispronunciations (e.g. 770 → סעוון סעוונטי) before tagging.
-        text_for_tts, pron_subs = apply_pronunciations(text_for_tts, pronunciations)
+        # Deterministic pronunciation safety net: the LLM was asked to apply the
+        # glossary context-aware, but this verbatim longest-first pass catches any
+        # rule it missed (already-applied rules simply no-op — the original token
+        # is gone). Notation-agnostic: replacement used exactly as authored, with
+        # the variant matching this voice's language preferred.
+        text_for_tts, pron_subs = apply_pronunciations(
+            text_for_tts, pronunciations, character.language
+        )
 
         # The script ALWAYS wins: a recognised stage direction overrides the
         # LLM's emotion. Otherwise use the LLM's emotion (source "llm"), or
@@ -195,7 +206,7 @@ class LLMPreprocessor:
         self,
         lines: list[ScriptLine],
         characters: dict[str, Character],
-        pronunciations: dict[str, str] | None = None,
+        pronunciations: dict[str, str] | list[dict] | None = None,
         progress_cb=None,
     ) -> list[ProcessedLine]:
         processed: list[ProcessedLine] = []

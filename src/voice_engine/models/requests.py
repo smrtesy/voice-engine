@@ -41,6 +41,19 @@ class CreateJobRequest(BaseModel):
     # For regenerate_line: the specific script line numbers to re-render.
     line_numbers: list[int] = []
 
+    # Per-org pronunciation lexicon, passed from smrtesy. Each entry is
+    # {word, replacement, language}: `replacement` is a free-form phonetic
+    # string (Hebrew *or* Latin) substituted verbatim into the spoken text —
+    # notation-agnostic, no script conversion. Longest phrase wins. When empty
+    # the orchestrator falls back to fetching the lexicon from the DB directly.
+    pronunciation: list[dict] = []
+
+    # For regenerate_line: verbatim per-line text edits. Each entry is
+    # {line_number, text_for_tts}. A line listed here is synthesized from the
+    # given text EXACTLY as supplied — no Google-Doc fetch, no LLM step that
+    # would overwrite it. Tone tags already on the line still wrap the text.
+    line_overrides: list[dict] = []
+
     # Post-production DSP on each rendered clip (off by default).
     postprocess_enabled: bool = False
     postprocess_compress: bool = True

@@ -88,6 +88,10 @@ class LinesRepository:
         duration_seconds: float,
         cost_usd: float,
         resemble_request: dict | None = None,
+        text_for_tts: str | None = None,
+        tts_body: str | None = None,
+        tags: list[dict] | None = None,
+        text_pointed: str | None = None,
     ) -> None:
         client = get_supabase()
         fields: dict = {
@@ -100,6 +104,18 @@ class LinesRepository:
         }
         if resemble_request is not None:
             fields["resemble_request"] = resemble_request
+        # Persist the exact text that was synthesized so the row matches the
+        # latest take (a manual edit or a pronunciation refresh in regenerate
+        # would otherwise leave text_for_tts/tts_body stale vs the new audio).
+        # text_pointed is written alongside text_for_tts so the "pointed"
+        # (niqqud) view can't drift from the text actually used.
+        if text_for_tts is not None:
+            fields["text_for_tts"] = text_for_tts
+            fields["text_pointed"] = text_pointed
+        if tts_body is not None:
+            fields["tts_body"] = tts_body
+        if tags is not None:
+            fields["tags"] = tags
         client.table(self.TABLE).update(fields).eq(
             "script_id", str(script_id)
         ).eq("line_number", line_number).execute()
