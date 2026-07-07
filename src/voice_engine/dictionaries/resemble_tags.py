@@ -70,37 +70,46 @@ def _inline(tag: str) -> dict:
 
 # Emotion label → ordered list of tags. Keys match the `emotion` strings used in
 # dictionaries/emotion_directions.py plus a few LLM-friendly synonyms.
+#
+# IMPORTANT: resemble-ultra has NO emotion-named tags (there is no <disappointed>
+# or <happy>). Its tags are ACOUSTIC — intensity (build/decrease), volume
+# (loud/soft/whisper), pitch (higher/lower), pace (slow/fast), emphasis — plus
+# inline sounds ([sigh] [cry] [laugh] [chuckle] [breath] [inhale]). So an emotion
+# is expressed by a *combination* of these. To stop everything collapsing onto a
+# single intensity tag, each emotion gets a DISTINCT fingerprint below (at most
+# two wrapping tags so the body doesn't over-nest). Pitch/pace tags are the
+# least battle-tested on Ultra — tune per how they actually sound.
 EMOTION_TAG_RECIPES: dict[str, list[dict]] = {
-    # high energy / positive
-    "excited": [_wrap("build-intensity")],
-    "happy": [_wrap("build-intensity")],
-    "energetic": [_wrap("build-intensity")],
-    "surprised": [_wrap("build-intensity")],
-    "calling_out": [_wrap("loud")],
-    # low energy / negative
-    "sad": [_inline("sigh"), _wrap("decrease-intensity")],
+    # high energy / positive — each distinct, not all "build-intensity"
+    "excited": [_wrap("build-intensity"), _wrap("higher-pitch")],
+    "happy": [_inline("chuckle"), _wrap("build-intensity")],
+    "energetic": [_wrap("build-intensity"), _wrap("fast")],
+    "surprised": [_inline("inhale"), _wrap("build-intensity"), _wrap("higher-pitch")],
+    "calling_out": [_wrap("loud"), _wrap("higher-pitch")],
+    # low energy / negative — split apart so they don't all sound the same
+    "sad": [_inline("sigh"), _wrap("decrease-intensity"), _wrap("lower-pitch")],
     "disappointed": [_inline("sigh"), _wrap("decrease-intensity")],
-    "despair": [_inline("sigh"), _wrap("decrease-intensity")],
-    "worried": [_wrap("decrease-intensity")],
-    "nervous": [_wrap("decrease-intensity")],
+    "despair": [_inline("sigh"), _wrap("decrease-intensity"), _wrap("slow")],
+    "worried": [_inline("breath"), _wrap("decrease-intensity")],
+    "nervous": [_inline("breath"), _wrap("fast")],
     "crying": [_inline("cry"), _wrap("decrease-intensity")],
     # volume / delivery
     "loud": [_wrap("loud")],
-    "angry": [_wrap("loud")],
-    "reprimanding": [_wrap("loud")],
+    "angry": [_wrap("loud"), _wrap("emphasis")],
+    "reprimanding": [_wrap("loud"), _wrap("slow")],
     "quiet": [_wrap("soft")],
     "soft": [_wrap("soft")],
-    "careful": [_wrap("soft")],
-    "respectful": [_wrap("soft")],
+    "careful": [_wrap("soft"), _wrap("slow")],
+    "respectful": [_wrap("soft"), _wrap("lower-pitch")],
     "whisper": [_wrap("whisper")],
     "whispering": [_wrap("whisper")],
-    "secret": [_wrap("whisper")],
-    # laughter / emphasis
+    "secret": [_wrap("whisper"), _wrap("slow")],
+    # laughter / emphasis / curiosity
     "laughing": [_inline("laugh")],
     "emphasis": [_wrap("emphasis")],
+    "curious": [_wrap("higher-pitch")],
     # neutral-ish → no tags
-    "curious": [],
-    "understanding": [],
+    "understanding": [_wrap("soft")],
     "reading": [],
     "neutral": [],
 }
