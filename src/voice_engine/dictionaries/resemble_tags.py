@@ -60,38 +60,62 @@ WRAP_TAGS: set[str] = {
 }
 
 
-# EXPERIMENT (per Resemble rep: undocumented tags can still take effect):
-# emit ONE wrapping tag NAMED AFTER THE EMOTION itself — <disappointed>…,
-# <excited>…, <surprised>… — instead of mapping many emotions onto a few
-# generic acoustic tags. This tests whether each specific emotion tag lands.
-# Underscores become hyphens to match Resemble's tag style (calling_out ->
-# calling-out). Only the known emotion labels get a tag; anything else (and the
-# deliberately-flat ones below) yields nothing.
-EMOTION_TAGS: set[str] = {
-    "excited", "happy", "energetic", "surprised", "calling_out",
-    "sad", "disappointed", "despair", "worried", "nervous", "crying",
-    "loud", "angry", "reprimanding", "quiet", "soft", "careful",
-    "respectful", "whisper", "whispering", "secret", "laughing",
-    "emphasis", "curious", "understanding",
+def _wrap(tag: str) -> dict:
+    return {"tag": tag, "type": "wrap"}
+
+
+def _inline(tag: str) -> dict:
+    return {"tag": tag, "type": "inline"}
+
+
+# Emotion label → recipe built ONLY from Resemble's real, supported tags
+# (INLINE_TAGS + WRAP_TAGS above). There is NO emotion-named tag on Ultra, so an
+# emotion is expressed as a DISTINCT combination of these acoustic tags — using
+# pitch (higher/lower), pace (slow/fast), volume/intensity, and inline sounds
+# ([sigh] [breath] [chuckle] [cry] [inhale] [laugh]) — so different emotions
+# don't collapse onto the same single tag. Capped at ~2 wrapping tags so the
+# body doesn't over-nest.
+EMOTION_TAG_RECIPES: dict[str, list[dict]] = {
+    # high energy / positive
+    "excited": [_wrap("build-intensity"), _wrap("higher-pitch")],
+    "happy": [_inline("chuckle"), _wrap("higher-pitch")],
+    "energetic": [_wrap("build-intensity"), _wrap("fast")],
+    "surprised": [_inline("inhale"), _wrap("higher-pitch")],
+    "calling_out": [_wrap("loud"), _wrap("higher-pitch")],
+    # low energy / negative — differentiated by pitch/pace + inline sound
+    "sad": [_inline("sigh"), _wrap("decrease-intensity"), _wrap("lower-pitch")],
+    "disappointed": [_inline("sigh"), _wrap("decrease-intensity")],
+    "despair": [_inline("sigh"), _wrap("decrease-intensity"), _wrap("slow")],
+    "worried": [_inline("breath"), _wrap("decrease-intensity")],
+    "nervous": [_inline("breath"), _wrap("fast")],
+    "crying": [_inline("cry"), _wrap("decrease-intensity"), _wrap("lower-pitch")],
+    # volume / delivery
+    "loud": [_wrap("loud")],
+    "angry": [_wrap("loud"), _wrap("emphasis")],
+    "reprimanding": [_wrap("loud"), _wrap("slow")],
+    "quiet": [_wrap("soft")],
+    "soft": [_wrap("soft"), _wrap("lower-pitch")],
+    "careful": [_wrap("soft"), _wrap("slow")],
+    "respectful": [_wrap("soft"), _wrap("lower-pitch")],
+    "whisper": [_wrap("whisper")],
+    "whispering": [_wrap("whisper")],
+    "secret": [_wrap("whisper"), _wrap("slow")],
+    # laughter / emphasis / curiosity
+    "laughing": [_inline("laugh"), _wrap("laugh-speak")],
+    "emphasis": [_wrap("emphasis")],
+    "curious": [_wrap("higher-pitch")],
+    "understanding": [_wrap("soft")],
+    # neutral-ish → no tags
+    "reading": [],
+    "neutral": [],
 }
-# Emotions that should stay flat (no tag emitted).
-FLAT_EMOTIONS: set[str] = {"", "neutral", "none", "reading"}
-
-
-def emotion_tag_name(emotion: str | None) -> str | None:
-    """The wrapping tag name for an emotion (e.g. 'disappointed'), or None when
-    the emotion should be voiced flat / is unrecognised."""
-    e = (emotion or "").strip().lower()
-    if e in FLAT_EMOTIONS or e not in EMOTION_TAGS:
-        return None
-    return e.replace("_", "-")
 
 
 def tags_for_emotion(emotion: str | None, source: str) -> list[dict]:
-    """One wrapping tag named after the emotion (e.g. <disappointed>…), stamped
-    with `source` ('script' | 'llm'). Flat/unknown emotions yield no tags."""
-    tag = emotion_tag_name(emotion)
-    return [{"tag": tag, "type": "wrap", "source": source}] if tag else []
+    """Return the acoustic tag recipe for an emotion label, stamped with
+    `source` ('script' | 'llm'). Unknown / flat emotions yield no tags."""
+    recipe = EMOTION_TAG_RECIPES.get((emotion or "").strip().lower(), [])
+    return [{"tag": t["tag"], "type": t["type"], "source": source} for t in recipe]
 
 
 def compose_body(text: str, tags: list[dict] | None) -> str:
