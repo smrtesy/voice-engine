@@ -85,6 +85,13 @@ class JobOrchestrator:
         if request.llm_model:
             self.preprocessor = LLMPreprocessor(model_override=request.llm_model)
 
+        # Deliver webhooks to the callback smrtesy handed us (its own URL +
+        # shared secret), not a separate engine env var that can drift.
+        self.webhook = WebhookSender(
+            callback_url=str(request.callback_url) if request.callback_url else None,
+            callback_secret=request.callback_secret,
+        )
+
         await self._set_running(job_id, started_at)
         await self.webhook.send_job_started(request.org_id, request.project_id, job_id)
 

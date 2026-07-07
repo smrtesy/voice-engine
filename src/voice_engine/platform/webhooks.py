@@ -20,10 +20,24 @@ logger = structlog.get_logger()
 class WebhookSender:
     """HMAC-signed webhook delivery to smrtesy."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        callback_url: str | None = None,
+        callback_secret: str | None = None,
+    ) -> None:
+        """Prefer the callback the caller (smrtesy) handed us in the job payload
+        over the engine's own env. smrtesy builds `callback_url` from its own
+        public URL and sets `callback_secret` to the SAME value it verifies
+        against (VOICE_ENGINE_WEBHOOK_SECRET) — so honoring them makes delivery
+        target + signing secret consistent-by-construction and immune to the
+        engine's SMRTESY_API_URL / WEBHOOK_SIGNING_SECRET drifting out of sync.
+        Falls back to the env settings when the caller didn't supply them."""
         settings = get_settings()
-        self.webhook_url = settings.smrtesy_api_url + settings.smrtesy_webhook_path
-        self.signing_secret = settings.webhook_signing_secret.encode()
+        self.webhook_url = callback_url or (
+            settings.smrtesy_api_url + settings.smrtesy_webhook_path
+        )
+        secret = callback_secret or settings.webhook_signing_secret
+        self.signing_secret = secret.encode()
 
     def _sign(self, payload: str, timestamp: int) -> str:
         message = f"{timestamp}.{payload}".encode()
