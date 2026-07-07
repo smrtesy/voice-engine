@@ -118,6 +118,64 @@ def tags_for_emotion(emotion: str | None, source: str) -> list[dict]:
     return [{"tag": t["tag"], "type": t["type"], "source": source} for t in recipe]
 
 
+# Mutually-exclusive WRAP-tag families. A character's style baseline (its
+# register/pace/volume identity) wins, so a recipe tag that collides with the
+# baseline's family is dropped — we never emit contradictory stacks like
+# <lower-pitch><higher-pitch> or <whisper><loud>.
+_CONFLICT_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({"higher-pitch", "lower-pitch"}),  # pitch register
+    frozenset({"slow", "fast"}),                 # pace
+    frozenset({"soft", "whisper", "loud"}),      # volume
+    frozenset({"build-intensity", "decrease-intensity"}),  # intensity arc
+)
+
+
+def _conflicts(tag: str) -> set[str]:
+    """The tags mutually exclusive with `tag` (its family minus itself)."""
+    out: set[str] = set()
+    for group in _CONFLICT_GROUPS:
+        if tag in group:
+            out |= group - {tag}
+    return out
+
+
+def baseline_tags(names: list[str] | None, source: str = "character") -> list[dict]:
+    """Turn a character's style baseline (a list of wrap-tag names) into tag
+    dicts applied to EVERY line — the character's 'melody' backbone. Only real
+    WRAP tags are kept (a baseline is about register/pace/volume, not inline
+    sounds); unknown names, duplicates, and any name that conflicts with an
+    already-chosen sibling (e.g. higher-pitch after lower-pitch) are dropped."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for n in names or []:
+        tag = (n or "").strip().lower()
+        if tag not in WRAP_TAGS or tag in seen or (seen & _conflicts(tag)):
+            continue
+        out.append({"tag": tag, "type": "wrap", "source": source})
+        seen.add(tag)
+    return out
+
+
+def merge_style(baseline: list[dict] | None, recipe: list[dict] | None) -> list[dict]:
+    """Merge a character's baseline tags (outermost, identity) with a per-line
+    emotion recipe. Baseline wins on exact duplicates and family conflicts, so
+    the character's register/pace/volume stays constant while the emotion still
+    colors delivery through the non-conflicting tags (and any inline sounds)."""
+    base = list(baseline or [])
+    have = {t["tag"] for t in base}
+    blocked: set[str] = set()
+    for t in base:
+        blocked |= _conflicts(t["tag"])
+    out = list(base)
+    for t in recipe or []:
+        tag = t["tag"]
+        if tag in have or tag in blocked:
+            continue
+        out.append(t)
+        have.add(tag)
+    return out
+
+
 def compose_body(text: str, tags: list[dict] | None) -> str:
     """Embed emotion tags into the Hebrew text to form the Resemble clip body.
 

@@ -8,7 +8,12 @@ from voice_engine.config import get_settings
 from voice_engine.dictionaries.emotion_directions import EMOTION_DIRECTIONS
 from voice_engine.dictionaries.hebrew_names import HEBREW_NAME_FIXES
 from voice_engine.dictionaries.pronunciations import apply_pronunciations, build_glossary
-from voice_engine.dictionaries.resemble_tags import compose_body, tags_for_emotion
+from voice_engine.dictionaries.resemble_tags import (
+    baseline_tags,
+    compose_body,
+    merge_style,
+    tags_for_emotion,
+)
 from voice_engine.lib.hebrew_utils import strip_niqqud
 from voice_engine.models.domain import Character, ProcessedLine, ScriptLine
 from voice_engine.preprocessor.llm_client import get_anthropic_client
@@ -95,6 +100,9 @@ class LLMPreprocessor:
             # Prefer the variant (Hebrew respelling vs Latin) matching this
             # voice's language.
             pronunciation_glossary=build_glossary(pronunciations, character.language),
+            # Per-character persona steers WHICH emotion the model picks so
+            # different characters don't all read with the same melody.
+            character_persona=character.personality_prompt or "",
         )
         user_message = build_user_message(line.text_clean, line.directions)
 
@@ -170,7 +178,12 @@ class LLMPreprocessor:
             elif emotion_source not in ("llm", "none"):
                 emotion_source = "llm"
 
-        tags = tags_for_emotion(emotion, emotion_source)
+        # Apply the character's style baseline (register/pace backbone) on top
+        # of the emotion recipe, so even neutral lines carry the character's
+        # melody. Baseline wins on conflicts (see merge_style).
+        tags = merge_style(
+            baseline_tags(character.style_baseline_tags), tags_for_emotion(emotion, emotion_source)
+        )
         tts_body = compose_body(text_for_tts, tags)
 
         logger.info(

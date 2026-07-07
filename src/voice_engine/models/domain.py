@@ -55,6 +55,12 @@ class Character(BaseModel):
     voice_type: Literal["rapid", "pro"] = "pro"
     language: str = "he"
     is_active: bool = True
+    # Per-character "style profile" — the fix for "every voice shares the same
+    # melody". `personality_prompt` steers the LLM's per-line emotion/tag choice
+    # in character; `style_baseline_tags` are WRAP tags (e.g. ["lower-pitch",
+    # "slow"]) applied to EVERY line as the character's register/pace backbone.
+    personality_prompt: str | None = None
+    style_baseline_tags: list[str] = []
 
 
 class VoiceProfile(BaseModel):

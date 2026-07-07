@@ -51,4 +51,6 @@ class CharactersRepository:
             voice_type=row.get("voice_type", "pro"),
             language=row.get("language", "he"),
             is_active=row.get("is_active", True),
+            personality_prompt=row.get("personality_prompt"),
+            style_baseline_tags=row.get("style_baseline_tags") or [],
         )

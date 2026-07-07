@@ -39,7 +39,12 @@ from voice_engine.db.projects import ProjectsRepository
 from voice_engine.db.scripts import ScriptsRepository
 from voice_engine.db.takes import LineTakesRepository
 from voice_engine.dictionaries.pronunciations import apply_pronunciations
-from voice_engine.dictionaries.resemble_tags import compose_body, tags_for_emotion
+from voice_engine.dictionaries.resemble_tags import (
+    baseline_tags,
+    compose_body,
+    merge_style,
+    tags_for_emotion,
+)
 from voice_engine.models.domain import (
     Character,
     JobResult,
@@ -337,7 +342,7 @@ class JobOrchestrator:
             for speaker, v in request.speaker_map.items():
                 if not isinstance(v, dict) or not v.get("resemble_voice_id"):
                     continue
-                characters[speaker] = Character(
+                char = Character(
                     id=UUID(v["character_id"]) if v.get("character_id") else None,
                     org_id=request.org_id,
                     name=v.get("character_name") or speaker,
@@ -346,6 +351,16 @@ class JobOrchestrator:
                     resemble_model=v.get("model"),
                     language=v.get("language", "he"),
                 )
+                # The casting map carries the VOICE, but the style profile
+                # (persona + baseline tags) lives on the DB character row — load
+                # it so per-character melody differentiation isn't a no-op on
+                # this (primary) path. The map still wins for voice/model.
+                if char.id is not None:
+                    db_char = await self.chars_repo.get(char.id)
+                    if db_char:
+                        char.personality_prompt = db_char.personality_prompt
+                        char.style_baseline_tags = db_char.style_baseline_tags
+                characters[speaker] = char
             return characters
         return await self._load_characters(request, lines)
 
@@ -822,8 +837,17 @@ class JobOrchestrator:
                     )
                     if subs:
                         line.text_for_tts = new_text
-                        line.tts_body = compose_body(new_text, line.tags)
                         line.pronunciation_subs = subs
+                    # Apply the character's style baseline so a plain re-render
+                    # also carries the character's melody (the fresh-LLM and
+                    # edit paths handle their own composition). Tags come from
+                    # the emotion recipe in _row_to_processed_line; merging the
+                    # baseline each time is idempotent. Recompose the body.
+                    if character:
+                        line.tags = merge_style(
+                            baseline_tags(character.style_baseline_tags), line.tags
+                        )
+                    line.tts_body = compose_body(line.text_for_tts, line.tags)
                 final_lines.append(line)
 
             lines = final_lines

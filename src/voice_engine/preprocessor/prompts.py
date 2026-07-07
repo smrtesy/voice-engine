@@ -10,6 +10,13 @@ prepare it for synthesis.
 Character speaking in this line: {character_name}
 {character_description}
 
+## Who this character is — stay in character
+{character_persona}
+Let this persona guide the emotion you pick and how strongly: a reserved,
+dignified character rarely spikes to "excited"; an energetic child leans
+bright and animated. Choose emotions that fit THIS character, not a generic
+reading. This shapes delivery — it does not change the words.
+
 ## Recent context (previous lines)
 {context_lines}
 
@@ -76,6 +83,7 @@ def build_system_prompt(
     name_dictionary: dict[str, str],
     emotion_dictionary: dict[str, dict],
     pronunciation_glossary: str = "",
+    character_persona: str = "",
 ) -> str:
     context_str = "\n".join(context_lines) if context_lines else "(start of scene)"
     names_str = "\n".join(f"  - {k} -> {v}" for k, v in name_dictionary.items())
@@ -83,9 +91,11 @@ def build_system_prompt(
         f"  - '{k}' -> {v['emotion']}" for k, v in emotion_dictionary.items()
     )
     glossary_str = pronunciation_glossary.strip() or "  (no org-specific pronunciation rules)"
+    persona_str = character_persona.strip() or "  (no specific persona — read naturally)"
     return SYSTEM_PROMPT_TEMPLATE.format(
         character_name=character_name,
         character_description=character_description,
+        character_persona=persona_str,
         context_lines=context_str,
         name_dictionary=names_str,
         emotion_dictionary=emotions_str,
