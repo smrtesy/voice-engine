@@ -1,12 +1,16 @@
 """Post-production DSP applied to a Resemble clip before we store it.
 
-Two validated steps (see HANDOFF):
+Steps (each optional, applied in this order):
   1. Gentle compressor — <build-intensity> builds volume gradually but can
      produce sharp volume jumps; a soft-knee-ish compressor (threshold ~-18 dB,
-     ratio ~4) tames the peaks without flattening the build.
+     ratio ~4) tames the peaks WITHIN a line without flattening the build.
   2. WSOLA time-stretch — speeding up ~1.15-1.2x adds expressiveness/pace
      WITHOUT distorting pitch or words (librosa's stretch distorts; WSOLA
      doesn't), so we use audiotsm's WSOLA.
+  3. Loudness normalization — brings every clip to the SAME target level
+     (RMS dBFS) with a peak ceiling, so lines don't jump in volume relative to
+     each other. Runs LAST so the final level is exact regardless of what the
+     compressor's makeup gain or the stretch did.
 
 Everything is best-effort: any failure logs and leaves the original file
 untouched, so a DSP hiccup never loses a generated clip.
@@ -63,6 +67,35 @@ def compress(
     return y
 
 
+def normalize_loudness(
+    x: np.ndarray,
+    target_db: float = -20.0,
+    peak_ceiling_db: float = -1.0,
+    max_gain_db: float = 20.0,
+) -> np.ndarray:
+    """Scale a mono clip to a target RMS loudness (dBFS) so every line sits at
+    the same perceived level, with a peak ceiling to avoid clipping.
+
+    Uses RMS (not full LUFS/K-weighting) — dependency-free and, for consistent
+    single-voice speech, produces very even loudness. `max_gain_db` caps the
+    boost so a near-silent clip's noise floor isn't amplified into a roar.
+    """
+    if x.size == 0:
+        return x
+    rms = float(np.sqrt(np.mean(np.square(x.astype(np.float64)))))
+    if rms < 1e-6:  # effectively silence — leave it alone
+        return x
+    rms_db = 20.0 * np.log10(rms)
+    gain_db = min(target_db - rms_db, max_gain_db)
+    y = x.astype(np.float64) * (10.0 ** (gain_db / 20.0))
+
+    ceiling = 10.0 ** (peak_ceiling_db / 20.0)
+    peak = float(np.max(np.abs(y))) if y.size else 0.0
+    if peak > ceiling:
+        y = y * (ceiling / peak)
+    return y.astype(np.float32)
+
+
 def time_stretch(x: np.ndarray, sr: int, speed: float) -> np.ndarray:
     """WSOLA time-stretch. speed>1 = faster/shorter, pitch preserved."""
     if speed == 1.0 or x.size == 0:
@@ -81,10 +114,13 @@ def postprocess_wav(
     path: Path,
     compress_enabled: bool = True,
     speed: float = 1.0,
+    normalize_enabled: bool = False,
+    target_db: float = -20.0,
 ) -> bool:
-    """Apply compressor and/or WSOLA to `path` in place. Returns True if the
-    file was modified. Best-effort: logs and returns False on any error."""
-    if not compress_enabled and (speed == 1.0):
+    """Apply compressor / WSOLA / loudness normalization to `path` in place.
+    Returns True if the file was modified. Best-effort: logs and returns False
+    on any error. Normalization runs LAST so the final level is exact."""
+    if not compress_enabled and speed == 1.0 and not normalize_enabled:
         return False
     try:
         import soundfile as sf
@@ -97,6 +133,8 @@ def postprocess_wav(
             data = compress(data, sr)
         if speed != 1.0:
             data = time_stretch(data, sr, speed)
+        if normalize_enabled:
+            data = normalize_loudness(data, target_db=target_db)
 
         sf.write(str(path), data, sr, subtype="PCM_24")
         logger.info(
@@ -104,6 +142,8 @@ def postprocess_wav(
             path=str(path),
             compress=compress_enabled,
             speed=speed,
+            normalize=normalize_enabled,
+            target_db=target_db,
         )
         return True
     except Exception as e:  # noqa: BLE001 — DSP must never lose a clip

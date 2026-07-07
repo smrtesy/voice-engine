@@ -63,6 +63,10 @@ class CreateJobRequest(BaseModel):
     postprocess_enabled: bool = False
     postprocess_compress: bool = True
     postprocess_speed: float = 1.0
+    # Loudness normalization: bring every clip to the same target level so
+    # lines don't jump in volume relative to each other.
+    postprocess_normalize: bool = True
+    postprocess_target_db: float = -20.0
 
     callback_url: HttpUrl | None = None
     callback_secret: str | None = None

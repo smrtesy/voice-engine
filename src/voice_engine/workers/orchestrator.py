@@ -553,12 +553,15 @@ class JobOrchestrator:
                 response.raise_for_status()
                 local_path.write_bytes(response.content)
 
-            # Optional post-production: gentle compressor + WSOLA time-stretch.
+            # Optional post-production: gentle compressor + WSOLA time-stretch
+            # + loudness normalization (even level across lines).
             if request.postprocess_enabled:
                 postprocess_wav(
                     local_path,
                     compress_enabled=request.postprocess_compress,
                     speed=request.postprocess_speed,
+                    normalize_enabled=request.postprocess_normalize,
+                    target_db=request.postprocess_target_db,
                 )
 
             storage_path = await self.storage.upload_audio(
@@ -583,6 +586,8 @@ class JobOrchestrator:
                 "enabled": request.postprocess_enabled,
                 "compress": request.postprocess_compress,
                 "speed": request.postprocess_speed,
+                "normalize": request.postprocess_normalize,
+                "target_db": request.postprocess_target_db,
             }
             if request.postprocess_enabled
             else None,
