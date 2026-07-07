@@ -39,7 +39,7 @@ from voice_engine.db.projects import ProjectsRepository
 from voice_engine.db.scripts import ScriptsRepository
 from voice_engine.db.takes import LineTakesRepository
 from voice_engine.dictionaries.pronunciations import apply_pronunciations
-from voice_engine.dictionaries.resemble_tags import compose_body
+from voice_engine.dictionaries.resemble_tags import compose_body, tags_for_emotion
 from voice_engine.models.domain import (
     Character,
     JobResult,
@@ -706,7 +706,17 @@ class JobOrchestrator:
     # ─── Regenerate specific lines ───────────────────────────────────────────
 
     def _row_to_processed_line(self, row: dict) -> ProcessedLine:
-        """Rebuild a ProcessedLine from a stored smrtvoice_lines row."""
+        """Rebuild a ProcessedLine from a stored smrtvoice_lines row.
+
+        Tone tags are RE-DERIVED from the stored emotion (not read from the
+        stored `tags`), so a plain re-render picks up the current tag scheme
+        deterministically — same emotion, no LLM call. (Manual text edits still
+        override this in _process_regenerate; a reprocess re-runs the LLM.)
+        """
+        emotion = row.get("emotion") or "neutral"
+        emotion_source = row.get("emotion_source") or "none"
+        text_for_tts = row.get("text_for_tts") or row.get("text_clean", "")
+        tags = tags_for_emotion(emotion, emotion_source)
         return ProcessedLine(
             line_number=row["line_number"],
             scene_title=row.get("scene_title"),
@@ -716,11 +726,11 @@ class JobOrchestrator:
             directions=row.get("directions") or [],
             is_pointed=bool(row.get("text_pointed")),
             character_id=UUID(row["character_id"]) if row.get("character_id") else None,
-            text_for_tts=row.get("text_for_tts") or row.get("text_clean", ""),
-            emotion=row.get("emotion") or "neutral",
-            emotion_source=row.get("emotion_source") or "none",
-            tts_body=row.get("tts_body") or (row.get("text_for_tts") or ""),
-            tags=row.get("tags") or [],
+            text_for_tts=text_for_tts,
+            emotion=emotion,
+            emotion_source=emotion_source,
+            tts_body=compose_body(text_for_tts, tags),
+            tags=tags,
             resemble_prompt=row.get("resemble_prompt"),
             final_exaggeration=row.get("final_exaggeration") or 0.5,
             final_pitch=row.get("final_pitch") or 0.0,

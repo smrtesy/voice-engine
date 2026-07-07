@@ -11,26 +11,26 @@ def test_neutral_emotion_has_no_tags():
     assert compose_body("שלום", []) == "שלום"
 
 
-def test_excited_builds_intensity_with_pitch_lift():
+def test_excited_wraps_its_own_emotion_tag():
     tags = tags_for_emotion("excited", "script")
-    assert tags == [
-        {"tag": "build-intensity", "type": "wrap", "source": "script"},
-        {"tag": "higher-pitch", "type": "wrap", "source": "script"},
-    ]
-    # First wrap listed is outermost.
-    assert compose_body("יש!", tags) == "<build-intensity><higher-pitch>יש!</higher-pitch></build-intensity>"
+    assert tags == [{"tag": "excited", "type": "wrap", "source": "script"}]
+    assert compose_body("יש!", tags) == "<excited>יש!</excited>"
 
 
-def test_sad_prefixes_sigh_and_wraps_decrease_and_lower_pitch():
-    tags = tags_for_emotion("sad", "llm")
-    body = compose_body("אוף", tags)
-    assert body == "[sigh] <decrease-intensity><lower-pitch>אוף</lower-pitch></decrease-intensity>"
+def test_disappointed_uses_the_disappointed_tag():
+    tags = tags_for_emotion("disappointed", "llm")
+    assert compose_body("אוף", tags) == "<disappointed>אוף</disappointed>"
     assert {t["source"] for t in tags} == {"llm"}
 
 
-def test_emotions_have_distinct_recipes():
-    # The whole point of the fix: high-energy emotions must not all collapse to
-    # the same single tag, and low-energy ones must differ from each other.
+def test_multiword_emotion_is_hyphenated():
+    tags = tags_for_emotion("calling_out", "llm")
+    assert compose_body("היי", tags) == "<calling-out>היי</calling-out>"
+
+
+def test_each_emotion_gets_its_own_distinct_tag():
+    # The whole point: every emotion maps to a tag named after itself, so no two
+    # distinct emotions collapse onto the same tag.
     def sig(e: str) -> tuple:
         return tuple((t["tag"], t["type"]) for t in tags_for_emotion(e, "llm"))
 
@@ -39,7 +39,7 @@ def test_emotions_have_distinct_recipes():
         ("sad", "disappointed", "despair", "worried"),
     ]:
         sigs = [sig(e) for e in group]
-        assert len(set(sigs)) == len(sigs), f"recipes collapsed within {group}: {sigs}"
+        assert len(set(sigs)) == len(sigs), f"tags collapsed within {group}: {sigs}"
 
 
 def test_whisper_wraps():
