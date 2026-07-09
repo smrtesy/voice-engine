@@ -181,7 +181,8 @@ class JobOrchestrator:
 
             try:
                 results = await self._generate_audio_for_lines(
-                    job_id, request, processed_lines, audio_segments, characters,
+                    job_id, request, processed_lines, audio_segments,
+                    self._build_speaker_voices(request, characters),
                     progress_cb=_on_generate,
                 )
             finally:
@@ -394,6 +395,60 @@ class JobOrchestrator:
 
         return characters
 
+    def _build_speaker_voices(
+        self,
+        request: CreateJobRequest,
+        characters: dict[str, Character],
+    ) -> dict[str, list[Character]]:
+        """speaker_name -> the list of voices to render for it.
+
+        A speaker cast to several characters (speaker_map entry carries a
+        `voices` list) produces one take per voice — each with that character's
+        own voice, model, and style baseline. Single-cast speakers fall back to
+        a one-element list holding the primary character, so the render loop is
+        identical to the pre-multi-voice behaviour.
+        """
+        out: dict[str, list[Character]] = {}
+        speaker_map = request.speaker_map if isinstance(request.speaker_map, dict) else {}
+        for speaker, primary in characters.items():
+            entry = speaker_map.get(speaker)
+            spec = entry.get("voices") if isinstance(entry, dict) else None
+            if not isinstance(spec, list) or not spec:
+                out[speaker] = [primary]
+                continue
+            chars: list[Character] = []
+            seen: set[str] = set()
+            for v in spec:
+                if not isinstance(v, dict) or not v.get("resemble_voice_id"):
+                    continue
+                vid = v["resemble_voice_id"]
+                if vid in seen:
+                    continue
+                seen.add(vid)
+                chars.append(
+                    Character(
+                        id=UUID(v["character_id"]) if v.get("character_id") else primary.id,
+                        org_id=request.org_id,
+                        name=v.get("character_name") or primary.name,
+                        display_name=v.get("character_name") or primary.display_name,
+                        description=v.get("description") or primary.description,
+                        resemble_voice_id=vid,
+                        resemble_model=v.get("model") or primary.resemble_model,
+                        language=v.get("language") or primary.language,
+                        # Each cast voice keeps its OWN style baseline/persona so
+                        # the characters don't share one melody; falls back to the
+                        # primary's when the payload omits them.
+                        personality_prompt=(
+                            v.get("personality_prompt") or primary.personality_prompt
+                        ),
+                        style_baseline_tags=(
+                            v.get("style_baseline_tags") or primary.style_baseline_tags
+                        ),
+                    )
+                )
+            out[speaker] = chars or [primary]
+        return out
+
     async def _split_input_audio(
         self,
         input_url: str,
@@ -411,7 +466,7 @@ class JobOrchestrator:
         request: CreateJobRequest,
         processed_lines: list[ProcessedLine],
         audio_segments: list[Path] | None,
-        characters: dict[str, Character],
+        speaker_voices: dict[str, list[Character]],
         progress_cb=None,
     ) -> list[dict]:
         adapter = get_adapter(request.adapter)
@@ -459,7 +514,7 @@ class JobOrchestrator:
                 result = {"success": False, "error": "unknown", "duration": 0.0, "cost": 0.0}
                 try:
                     result = await self._generate_single_line(
-                        job_id, request, line, segment, adapter, characters
+                        job_id, request, line, segment, adapter, speaker_voices
                     )
                     return result
                 finally:
@@ -486,16 +541,18 @@ class JobOrchestrator:
         line: ProcessedLine,
         audio_segment: Path | None,
         adapter,
-        characters: dict[str, Character],
+        speaker_voices: dict[str, list[Character]],
     ) -> dict:
-        """Generate audio for one line and upload it. Returns a result dict."""
+        """Generate audio for one line and upload it. A speaker cast to several
+        voices produces one take per voice (all marked good and labelled by
+        character); a single-voice speaker behaves exactly as before. Returns a
+        result dict."""
         script_id = request.script_id or request.project_id
 
-        # Resolve the cast voice for this line's speaker. No voice → the speaker
-        # was intentionally skipped (or left uncast); mark the line skipped, not
-        # failed, so "cast one, skip the rest" doesn't report failures.
-        character = characters.get(line.speaker_name)
-        if not character or not character.resemble_voice_id:
+        # Resolve the cast voice(s). No voice → the speaker was intentionally
+        # skipped (or left uncast); mark skipped, not failed.
+        voices = [c for c in (speaker_voices.get(line.speaker_name) or []) if c.resemble_voice_id]
+        if not voices:
             await self.lines_repo.mark_skipped(
                 script_id, line.line_number, "speaker skipped (no voice cast)"
             )
@@ -507,7 +564,7 @@ class JobOrchestrator:
                 "cost": 0.0,
             }
 
-        # Upload the per-line input segment (STS) so Resemble can fetch it via signed URL.
+        # Upload the per-line input segment (STS) once; every voice converts it.
         input_audio_url: str | None = None
         if audio_segment is not None:
             input_path = (
@@ -518,19 +575,166 @@ class JobOrchestrator:
                 self.storage._upload_bytes(input_path, f.read(), "audio/wav")
             input_audio_url = await self.storage.create_signed_url(input_path)
 
-        # Model precedence (most specific wins):
-        #   1. character.resemble_model — per-character, UI-editable in
-        #      /voice/characters/[id]. New characters inherit the org's
-        #      default_resemble_model at creation time (smrtesy side).
-        #   2. settings.resemble_default_model — voice-engine env fallback,
-        #      only used when a character has no model set.
-        #   3. None — let Resemble pick its own default.
-        resolved_model = character.resemble_model or self.settings.resemble_default_model or None
+        multi = len(voices) > 1
+        renders: list[dict] = []
+        errors: list[str] = []
+        for character in voices:
+            # Multi-voice: recompose the body per voice so each character keeps
+            # its own style baseline ("melody"). Single-voice: reuse the line's
+            # already-composed body/tags verbatim (preserves verbatim edits and
+            # overrides exactly as before).
+            if multi:
+                tags = merge_style(
+                    baseline_tags(character.style_baseline_tags),
+                    tags_for_emotion(line.emotion, line.emotion_source),
+                )
+                body = compose_body(line.text_for_tts, tags)
+            else:
+                tags = line.tags or []
+                body = line.tts_body or line.text_for_tts
+            r = await self._render_clip(
+                request, line, character, body, tags, input_audio_url, adapter, script_id
+            )
+            if r.get("ok"):
+                renders.append(r)
+            else:
+                errors.append(r.get("error") or "render failed")
 
+        if not renders:
+            # Surface the real adapter error (rate-limit, bad voice, quota…) on
+            # the line so the studio shows it — not just a generic message.
+            msg = errors[0] if errors else "all cast voices failed to render"
+            await self.lines_repo.mark_failed(script_id, line.line_number, msg)
+            return {"success": False, "error": msg, "duration": 0.0, "cost": 0.0}
+
+        # The line's representative clip is the first voice; the ledger cost is
+        # the sum across all voices rendered for this line.
+        rep = renders[0]
+        total_cost = sum(r["cost"] for r in renders)
+
+        # On a redo, capture the clip we're about to replace BEFORE mark_completed
+        # overwrites output_audio_path — smrtesy backfills it as a take so a line
+        # first rendered before take-history existed keeps its old version. Only
+        # for regenerate: a full generation's line was pending (no prior clip).
+        previous_take: dict | None = None
+        if request.job_type == "regenerate_line":
+            prev = await self.lines_repo.get_output_row(script_id, line.line_number)
+            old_path = (prev or {}).get("output_audio_path")
+            if old_path and old_path != rep["storage_path"]:
+                prev_req = (prev or {}).get("resemble_request") or {}
+                previous_take = {
+                    "output_audio_path": old_path,
+                    "duration_seconds": (prev or {}).get("output_duration_seconds"),
+                    "cost_usd": (prev or {}).get("generation_cost_usd"),
+                    "text_used": (prev or {}).get("tts_body")
+                    or (prev or {}).get("text_for_tts"),
+                    "model": prev_req.get("model") if isinstance(prev_req, dict) else None,
+                }
+
+        await self.lines_repo.mark_completed(
+            script_id,
+            line.line_number,
+            rep["storage_path"],
+            rep["duration"],
+            total_cost,
+            resemble_request=rep["resemble_request"],
+            # Keep the row's text in sync with what was actually synthesized,
+            # including the pointed (niqqud) view so it can't drift.
+            text_for_tts=line.text_for_tts,
+            tts_body=rep["body"],
+            tags=rep["tags"],
+            text_pointed=line.text_for_tts if line.is_pointed else None,
+            # Keep emotion in sync (a "re-analyze tone" redo picks a fresh one).
+            emotion=line.emotion,
+            emotion_source=line.emotion_source,
+        )
+
+        # Find the line_id we wrote (so the webhook can carry it).
+        line_id = await self.lines_repo.get_id(script_id, line.line_number)
+
+        # Record each render as a take — directly, so history is reliable even
+        # when the smrtesy webhook never lands. On a redo, first backfill the
+        # clip we just replaced IF the line has no takes yet (a line first
+        # rendered before take-history existed), so its old version stays.
+        if line_id:
+            if previous_take and await self.takes_repo.count_for_line(line_id) == 0:
+                await self.takes_repo.record(
+                    org_id=request.org_id,
+                    line_id=line_id,
+                    script_id=request.script_id,
+                    text_used=previous_take.get("text_used"),
+                    model=previous_take.get("model"),
+                    output_audio_path=previous_take["output_audio_path"],
+                    duration_seconds=previous_take.get("duration_seconds"),
+                    cost_usd=previous_take.get("cost_usd"),
+                )
+            for r in renders:
+                await self.takes_repo.record(
+                    org_id=request.org_id,
+                    line_id=line_id,
+                    script_id=request.script_id,
+                    text_used=r["body"],
+                    model=r["model"],
+                    output_audio_path=r["storage_path"],
+                    duration_seconds=r["duration"],
+                    cost_usd=r["cost"],
+                    # Multi-voice: every voice is a good, labelled deliverable.
+                    approved=multi,
+                    voice_label=(r["character"].display_name or r["character"].name)
+                    if multi
+                    else None,
+                )
+
+        await self.webhook.send_line_completed(
+            request.org_id,
+            request.project_id,
+            job_id,
+            {
+                "line_id": str(line_id) if line_id else str(uuid4()),
+                "script_id": str(script_id),
+                "line_number": line.line_number,
+                "speaker_name": line.speaker_name,
+                # Unique per-take path (never overwrites the prior take).
+                "output_audio_path": rep["storage_path"],
+                "duration_seconds": rep["duration"],
+                "cost_usd": total_cost,
+                # The model actually used and the exact text sent — smrtesy
+                # records these on the take history + cost ledger.
+                "model": rep["model"],
+                "text_used": rep["body"],
+                # The prior clip (redo only) so smrtesy can backfill it as a take.
+                "previous_take": previous_take,
+            },
+        )
+
+        return {
+            "success": True,
+            "duration": rep["duration"],
+            "cost": total_cost,
+        }
+
+    async def _render_clip(
+        self,
+        request: CreateJobRequest,
+        line: ProcessedLine,
+        character: Character,
+        body: str,
+        tags: list[dict],
+        input_audio_url: str | None,
+        adapter,
+        script_id,
+    ) -> dict:
+        """Render ONE clip for ONE voice: call Resemble, download, post-process,
+        and upload to our storage (unique path). Returns {"ok": True, ...render
+        fields} on success, or {"ok": False, "error": <msg>} when the adapter
+        call fails — so the line's other voices can still succeed and the real
+        error can be surfaced on the line."""
+        # Model precedence: per-character model → engine env default → Resemble's.
+        resolved_model = character.resemble_model or self.settings.resemble_default_model or None
         gen_req = GenerateRequest(
             text=line.text_for_tts,
-            tts_body=line.tts_body or line.text_for_tts,
-            tags=line.tags or [],
+            tts_body=body or line.text_for_tts,
+            tags=tags or [],
             voice_id=character.resemble_voice_id,
             language=character.language,
             input_audio_url=input_audio_url,
@@ -553,12 +757,10 @@ class JobOrchestrator:
             logger.error(
                 "line_generation_failed",
                 line_number=line.line_number,
+                voice_id=character.resemble_voice_id,
                 error=str(e),
             )
-            await self.lines_repo.mark_failed(
-                script_id, line.line_number, str(e)
-            )
-            return {"success": False, "error": str(e), "duration": 0.0, "cost": 0.0}
+            return {"ok": False, "error": str(e)}
 
         # Download from Resemble and upload to our storage so signed URLs come from us.
         with TemporaryDirectory() as tmp:
@@ -586,11 +788,11 @@ class JobOrchestrator:
                 self._output_filename(request, line),
             )
 
-        # Persist the exact Resemble request for transparency in the UI.
+        used_body = result.adapter_metadata.get("body", gen_req.tts_body)
         resemble_request = {
             "model": gen_req.model,
             "voice_uuid": gen_req.voice_id,
-            "body": result.adapter_metadata.get("body", gen_req.tts_body),
+            "body": used_body,
             "tags": gen_req.tags,
             "emotion": line.emotion,
             "emotion_source": line.emotion_source,
@@ -607,100 +809,16 @@ class JobOrchestrator:
             if request.postprocess_enabled
             else None,
         }
-
-        # On a redo, capture the clip we're about to replace BEFORE mark_completed
-        # overwrites output_audio_path — smrtesy backfills it as a take so a line
-        # first rendered before take-history existed keeps its old version. Only
-        # for regenerate: a full generation's line was pending (no prior clip).
-        previous_take: dict | None = None
-        if request.job_type == "regenerate_line":
-            prev = await self.lines_repo.get_output_row(script_id, line.line_number)
-            old_path = (prev or {}).get("output_audio_path")
-            if old_path and old_path != storage_path:
-                prev_req = (prev or {}).get("resemble_request") or {}
-                previous_take = {
-                    "output_audio_path": old_path,
-                    "duration_seconds": (prev or {}).get("output_duration_seconds"),
-                    "cost_usd": (prev or {}).get("generation_cost_usd"),
-                    "text_used": (prev or {}).get("tts_body")
-                    or (prev or {}).get("text_for_tts"),
-                    "model": prev_req.get("model") if isinstance(prev_req, dict) else None,
-                }
-
-        await self.lines_repo.mark_completed(
-            script_id,
-            line.line_number,
-            storage_path,
-            result.duration_seconds,
-            result.cost_usd,
-            resemble_request=resemble_request,
-            # Keep the row's text in sync with what was actually synthesized,
-            # including the pointed (niqqud) view so it can't drift.
-            text_for_tts=line.text_for_tts,
-            tts_body=line.tts_body,
-            tags=line.tags,
-            text_pointed=line.text_for_tts if line.is_pointed else None,
-            # Keep emotion in sync (a "re-analyze tone" redo picks a fresh one).
-            emotion=line.emotion,
-            emotion_source=line.emotion_source,
-        )
-
-        # Find the line_id we wrote (so the webhook can carry it).
-        line_id = await self.lines_repo.get_id(script_id, line.line_number)
-
-        # Record this render as a take — directly, so history is reliable even
-        # when the smrtesy webhook never lands. On a redo, first backfill the
-        # clip we just replaced IF the line has no takes yet (a line first
-        # rendered before take-history existed), so its old version stays.
-        if line_id:
-            if previous_take and await self.takes_repo.count_for_line(line_id) == 0:
-                await self.takes_repo.record(
-                    org_id=request.org_id,
-                    line_id=line_id,
-                    script_id=request.script_id,
-                    text_used=previous_take.get("text_used"),
-                    model=previous_take.get("model"),
-                    output_audio_path=previous_take["output_audio_path"],
-                    duration_seconds=previous_take.get("duration_seconds"),
-                    cost_usd=previous_take.get("cost_usd"),
-                )
-            await self.takes_repo.record(
-                org_id=request.org_id,
-                line_id=line_id,
-                script_id=request.script_id,
-                text_used=result.adapter_metadata.get("body", gen_req.tts_body),
-                model=gen_req.model,
-                output_audio_path=storage_path,
-                duration_seconds=result.duration_seconds,
-                cost_usd=result.cost_usd,
-            )
-
-        await self.webhook.send_line_completed(
-            request.org_id,
-            request.project_id,
-            job_id,
-            {
-                "line_id": str(line_id) if line_id else str(uuid4()),
-                "script_id": str(script_id),
-                "line_number": line.line_number,
-                "speaker_name": line.speaker_name,
-                # Unique per-take path (never overwrites the prior take).
-                "output_audio_path": storage_path,
-                "duration_seconds": result.duration_seconds,
-                "cost_usd": result.cost_usd,
-                # The model actually used and the exact text sent — smrtesy
-                # records these on the take history + cost ledger.
-                "model": gen_req.model,
-                "text_used": result.adapter_metadata.get("body", gen_req.tts_body),
-                # The prior clip (redo only) so smrtesy can backfill it as a take.
-                "previous_take": previous_take,
-            },
-        )
-
         return {
-            "success": True,
+            "ok": True,
+            "storage_path": storage_path,
             "duration": result.duration_seconds,
             "cost": result.cost_usd,
+            "body": used_body,
+            "tags": gen_req.tags,
+            "model": gen_req.model,
+            "character": character,
+            "resemble_request": resemble_request,
         }
 
     @staticmethod
@@ -868,7 +986,9 @@ class JobOrchestrator:
                 )
 
             results = await self._generate_audio_for_lines(
-                job_id, request, lines, None, characters, progress_cb=_on_regenerate
+                job_id, request, lines, None,
+                self._build_speaker_voices(request, characters),
+                progress_cb=_on_regenerate,
             )
 
             total_duration = sum(r["duration"] for r in results)
