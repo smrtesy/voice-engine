@@ -45,21 +45,31 @@ class LineTakesRepository:
         output_audio_path: str,
         duration_seconds: float | None,
         cost_usd: float | None,
+        approved: bool = False,
+        voice_label: str | None = None,
     ) -> None:
-        """Append one take. Best-effort: a failure must never abort a render."""
+        """Append one take. Best-effort: a failure must never abort a render.
+
+        `approved`/`voice_label` are set for multi-voice lines (a speaker cast to
+        several characters) — each voice's clip is a good, labelled deliverable.
+        Single-voice renders keep approved=False (so a regenerate never steals
+        the user's manual selection) and no label.
+        """
         try:
             client = get_supabase()
-            client.table(self.TABLE).insert(
-                {
-                    "org_id": str(org_id),
-                    "line_id": str(line_id),
-                    "script_id": str(script_id) if script_id else None,
-                    "text_used": text_used,
-                    "model": model,
-                    "output_audio_path": output_audio_path,
-                    "duration_seconds": duration_seconds,
-                    "cost_usd": cost_usd,
-                }
-            ).execute()
+            row: dict = {
+                "org_id": str(org_id),
+                "line_id": str(line_id),
+                "script_id": str(script_id) if script_id else None,
+                "text_used": text_used,
+                "model": model,
+                "output_audio_path": output_audio_path,
+                "duration_seconds": duration_seconds,
+                "cost_usd": cost_usd,
+                "approved": approved,
+            }
+            if voice_label:
+                row["voice_label"] = voice_label
+            client.table(self.TABLE).insert(row).execute()
         except Exception as e:  # noqa: BLE001 — history is best-effort
             logger.warning("take_record_failed", line_id=str(line_id), error=str(e))
