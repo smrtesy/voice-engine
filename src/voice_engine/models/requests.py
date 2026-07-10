@@ -104,3 +104,7 @@ class CreateVoiceRequest(BaseModel):
     # Resemble accepts); this field is kept for compatibility.
     voice_type: Literal["rapid", "pro"] = "rapid"
     language: str = "he"
+    # Gently clean the recordings before cloning (high-pass + silence trim +
+    # loudness normalize). False sends the raw audio — e.g. to A/B a raw clone
+    # against a cleaned one.
+    clean: bool = True
