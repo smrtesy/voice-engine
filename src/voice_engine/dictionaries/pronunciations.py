@@ -41,12 +41,20 @@ def normalize_lexicon(
     """Coerce either accepted shape into a flat {original: replacement} map.
 
     The list shape carries a per-entry `language` (the notation of the
-    replacement: 'he' respelling vs 'en' transliteration). When a target
-    `language` is given, the entry matching it wins for each word; a word with
-    no matching-language entry falls back to whatever other entry exists (so a
-    Latin-only entry still applies to a Hebrew line rather than being dropped).
-    This makes the applied variant deterministic and correct per voice —
-    instead of "arbitrary last row wins".
+    replacement: 'he' respelling vs 'en' transliteration). Gating is STRICT and
+    keyed on the target `language` (the SCRIPT's language):
+
+      * an entry whose language == target applies ("matched"),
+      * an entry with NO language applies to any script ("universal"),
+      * an entry whose language is set and != target is DROPPED.
+
+    A matched entry overrides a universal one for the same word. When no target
+    `language` is given (legacy callers), nothing is gated — every entry
+    applies, first-wins per word.
+
+    Strict gating is the point: a Hebrew respelling must NOT leak into an
+    English script and vice versa, even when the voice's own language differs
+    from the script's.
 
     An entry needs a non-empty original AND replacement to count.
     """
@@ -55,8 +63,8 @@ def normalize_lexicon(
     if isinstance(lexicon, dict):
         return {k: v for k, v in lexicon.items() if k and v}
 
-    preferred: dict[str, str] = {}  # entries whose language matches the target
-    fallback: dict[str, str] = {}   # everything else, first-wins per word
+    universal: dict[str, str] = {}  # no language set → applies to any script
+    matched: dict[str, str] = {}    # language == target (or no gating)
     for entry in lexicon:
         if not isinstance(entry, dict):
             continue
@@ -65,12 +73,16 @@ def normalize_lexicon(
         if not (original and replacement):
             continue
         entry_lang = (entry.get("language") or "").strip()
-        if language and entry_lang == language:
-            preferred[original] = replacement
-        else:
-            fallback.setdefault(original, replacement)
-    # preferred (language-matching) overrides the fallback for the same word.
-    return {**fallback, **preferred}
+        if not language:
+            # No target → no gating; first entry wins per word.
+            matched.setdefault(original, replacement)
+        elif not entry_lang:
+            universal.setdefault(original, replacement)
+        elif entry_lang == language:
+            matched[original] = replacement
+        # else: explicit other-language entry → dropped (strict gating).
+    # matched (language-specific) overrides universal for the same word.
+    return {**universal, **matched}
 
 
 def _replace_token(text: str, original: str, replacement: str) -> str:
@@ -89,8 +101,8 @@ def apply_pronunciations(
 ) -> tuple[str, list[dict]]:
     """Rewrite known mispronounced tokens. Returns (new_text, applied[]).
 
-    `language` selects which lexicon variant to prefer per word (the speaking
-    voice's language). `applied` is a list of {"from", "to"} for the
+    `language` is the SCRIPT's language: it gates which lexicon entries apply
+    (see normalize_lexicon). `applied` is a list of {"from", "to"} for the
     substitutions that fired — surfaced in the per-line Resemble request for
     transparency.
     """
@@ -119,8 +131,8 @@ def build_glossary(
     Context-aware application is preferred: the model sees `original -> replacement`
     pairs and substitutes them in the spoken text respecting context (e.g. the
     same word in construct state vs standalone), keeping the replacement verbatim.
-    `language` selects the variant to show per word (the voice's language).
-    Returns "" when there's nothing org-specific to apply.
+    `language` is the SCRIPT's language: only entries that apply to it are
+    shown (see normalize_lexicon). Returns "" when there's nothing to apply.
     """
     merged = normalize_lexicon(lexicon, language)
     if not merged:
