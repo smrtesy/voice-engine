@@ -13,6 +13,12 @@ class CreateJobRequest(BaseModel):
     project_id: UUID
     # v2: the script (program) this job renders. Lines belong to a script.
     script_id: UUID | None = None
+    # The script's language ('he'/'en'). Drives WHICH pronunciation-lexicon
+    # entries apply: an entry tagged 'he' fires only on Hebrew scripts, 'en'
+    # only on English scripts (entries with no language apply to any). This is
+    # script-scoped on purpose — a Hebrew voice used in an English script must
+    # get the English respellings. None → no gating (legacy: apply all).
+    language: str | None = None
     # Per-script casting: speaker_name -> {resemble_voice_id, model, language}.
     # When set, this replaces name-matching characters to a voice.
     speaker_map: dict[str, dict] = {}

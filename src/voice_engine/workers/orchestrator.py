@@ -150,7 +150,8 @@ class JobOrchestrator:
                 )
 
             processed_lines = await self.preprocessor.process_batch(
-                lines, characters, pronunciations, progress_cb=_on_preprocess
+                lines, characters, pronunciations, progress_cb=_on_preprocess,
+                script_language=request.language,
             )
             for processed in processed_lines:
                 await self.lines_repo.update_llm_data(script_id, processed)
@@ -957,7 +958,8 @@ class JobOrchestrator:
                     )
                     final_lines.append(
                         await self.preprocessor.process_line(
-                            src_line, character, None, pronunciations
+                            src_line, character, None, pronunciations,
+                            script_language=request.language,
                         )
                     )
                     continue
@@ -978,7 +980,7 @@ class JobOrchestrator:
                     new_text, subs = apply_pronunciations(
                         line.text_for_tts,
                         pronunciations,
-                        character.language if character else None,
+                        request.language or (character.language if character else None),
                     )
                     if subs:
                         line.text_for_tts = new_text

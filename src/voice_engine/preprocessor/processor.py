@@ -86,7 +86,13 @@ class LLMPreprocessor:
         character: Character,
         context_lines: list[ScriptLine] | None = None,
         pronunciations: dict[str, str] | list[dict] | None = None,
+        script_language: str | None = None,
     ) -> ProcessedLine:
+        # The SCRIPT's language selects which lexicon entries apply — not the
+        # voice's. A Hebrew voice cast into an English script gets the English
+        # respellings. Fall back to the voice's language only when the script
+        # language wasn't supplied (legacy callers).
+        pron_language = script_language or character.language
         system_prompt = build_system_prompt(
             character_name=character.name,
             character_description=character.description or "",
@@ -97,9 +103,8 @@ class LLMPreprocessor:
             emotion_dictionary=EMOTION_DIRECTIONS,
             # Hand the org glossary to the model so it can apply pronunciation
             # rules context-aware. A deterministic pass below is the safety net.
-            # Prefer the variant (Hebrew respelling vs Latin) matching this
-            # voice's language.
-            pronunciation_glossary=build_glossary(pronunciations, character.language),
+            # Show the model the entries that apply to THIS script's language.
+            pronunciation_glossary=build_glossary(pronunciations, pron_language),
             # Per-character persona steers WHICH emotion the model picks so
             # different characters don't all read with the same melody.
             character_persona=character.personality_prompt or "",
@@ -157,10 +162,10 @@ class LLMPreprocessor:
         # Deterministic pronunciation safety net: the LLM was asked to apply the
         # glossary context-aware, but this verbatim longest-first pass catches any
         # rule it missed (already-applied rules simply no-op — the original token
-        # is gone). Notation-agnostic: replacement used exactly as authored, with
-        # the variant matching this voice's language preferred.
+        # is gone). Notation-agnostic: replacement used exactly as authored,
+        # gated to the entries that apply to this script's language.
         text_for_tts, pron_subs = apply_pronunciations(
-            text_for_tts, pronunciations, character.language
+            text_for_tts, pronunciations, pron_language
         )
 
         # The script ALWAYS wins: a recognised stage direction overrides the
@@ -221,6 +226,7 @@ class LLMPreprocessor:
         characters: dict[str, Character],
         pronunciations: dict[str, str] | list[dict] | None = None,
         progress_cb=None,
+        script_language: str | None = None,
     ) -> list[ProcessedLine]:
         processed: list[ProcessedLine] = []
         total = sum(1 for line in lines if line.speaker_name in characters)
@@ -236,7 +242,9 @@ class LLMPreprocessor:
 
             context = lines[max(0, i - 2) : i]
             processed.append(
-                await self.process_line(line, character, context, pronunciations)
+                await self.process_line(
+                    line, character, context, pronunciations, script_language
+                )
             )
             if progress_cb is not None:
                 await progress_cb(len(processed), total)
