@@ -36,6 +36,10 @@ class ParseScriptResponse(BaseModel):
     total_lines: int
     scenes: list[str]
     speakers: list[str]
+    # speaker_name -> number of lines that speaker has in the parsed script.
+    # Lets smrtesy show a per-speaker line count on the casting screen without
+    # depending on generated (deletable) rows.
+    speaker_line_counts: dict[str, int] = {}
     warnings: list[str]
     preview: list[dict]
 

@@ -47,6 +47,11 @@ async def parse_script_endpoint(request: ParseScriptRequest) -> ParseScriptRespo
 
     scenes = sorted({line.scene_title for line in lines if line.scene_title})
     speakers = sorted({line.speaker_name for line in lines})
+    speaker_line_counts: dict[str, int] = {}
+    for line in lines:
+        speaker_line_counts[line.speaker_name] = (
+            speaker_line_counts.get(line.speaker_name, 0) + 1
+        )
     preview = [
         {
             "line": line.line_number,
@@ -62,6 +67,7 @@ async def parse_script_endpoint(request: ParseScriptRequest) -> ParseScriptRespo
         total_lines=len(lines),
         scenes=scenes,
         speakers=speakers,
+        speaker_line_counts=speaker_line_counts,
         warnings=warnings,
         preview=preview,
     )
