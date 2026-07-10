@@ -116,7 +116,9 @@ def test_language_prefers_latin_variant():
 def test_language_none_still_applies_some_variant():
     # A word with only a non-matching-language entry must still apply (fallback),
     # not be dropped.
-    text, _ = apply_pronunciations("בית", [{"word": "בית", "replacement": "beit", "language": "en"}], "he")
+    text, _ = apply_pronunciations(
+        "בית", [{"word": "בית", "replacement": "beit", "language": "en"}], "he"
+    )
     assert text == "beit"
 
 

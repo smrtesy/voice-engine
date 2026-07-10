@@ -18,12 +18,46 @@ untouched, so a DSP hiccup never loses a generated clip.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import structlog
 
 logger = structlog.get_logger()
+
+
+def _follow_envelope_py(ax: np.ndarray, atk: float, rel: float) -> np.ndarray:
+    """Reference attack/release peak-envelope follower (pure Python).
+
+    Kept as the definition of correctness AND as the fallback when numba isn't
+    importable. The recursion is genuinely sequential — the smoothing
+    coefficient at each sample depends on whether the signal rose or fell
+    relative to the running envelope — so it can't be a single vectorized
+    filter. The JIT'd variant below computes the IDENTICAL values, just fast.
+    """
+    env = np.empty_like(ax)
+    e = 0.0
+    for i in range(ax.size):
+        coeff = atk if ax[i] > e else rel
+        e = coeff * e + (1.0 - coeff) * ax[i]
+        env[i] = e
+    return env
+
+
+# Compile the envelope follower with numba when available (it ships transitively
+# with librosa, already a hard dependency). This turns the per-sample Python
+# loop — 48 000 iterations per second of audio, the dominant CPU cost of
+# post-processing a clip — into native code with no change to the math. If numba
+# can't be imported for any reason we transparently fall back to the pure-Python
+# reference, so a missing/broken numba never loses a clip.
+_follow_envelope: Callable[[np.ndarray, float, float], np.ndarray]
+try:  # pragma: no cover - exercised via _follow_envelope
+    from numba import njit
+
+    _follow_envelope = njit(cache=True)(_follow_envelope_py)
+except Exception:  # noqa: BLE001 - any import/JIT failure → safe fallback
+    _follow_envelope = _follow_envelope_py
 
 
 def compress(
@@ -41,14 +75,10 @@ def compress(
     atk = float(np.exp(-1.0 / (sr * attack_ms / 1000.0)))
     rel = float(np.exp(-1.0 / (sr * release_ms / 1000.0)))
 
-    # Smoothed peak envelope (attack on rise, release on fall).
+    # Smoothed peak envelope (attack on rise, release on fall). Runs JIT'd when
+    # numba is present, otherwise the identical pure-Python recursion.
     ax = np.abs(x).astype(np.float64)
-    env = np.empty_like(ax)
-    e = 0.0
-    for i in range(ax.size):
-        coeff = atk if ax[i] > e else rel
-        e = coeff * e + (1.0 - coeff) * ax[i]
-        env[i] = e
+    env = _follow_envelope(ax, atk, rel)
 
     env_db = 20.0 * np.log10(env + eps)
     over = np.maximum(env_db - threshold_db, 0.0)
