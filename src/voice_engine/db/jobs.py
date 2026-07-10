@@ -32,3 +32,21 @@ class JobsRepository:
 
     async def update_status(self, job_id: UUID, status: str) -> None:
         await self.update(job_id, {"status": status})
+
+    async def get_status_by_engine_id(self, engine_job_id: UUID) -> str | None:
+        """Read the smrtesy job row's status by its voice_engine_job_id.
+
+        smrtesy owns the smrtvoice_jobs row (its own `id`), storing our job id in
+        `voice_engine_job_id` — so a cooperative "cancel" flips that row's status
+        to 'cancelled', which the worker polls here to stop a running job.
+        """
+        client = get_supabase()
+        result = (
+            client.table(self.TABLE)
+            .select("status")
+            .eq("voice_engine_job_id", str(engine_job_id))
+            .limit(1)
+            .execute()
+        )
+        rows = result.data or []
+        return rows[0].get("status") if rows else None
