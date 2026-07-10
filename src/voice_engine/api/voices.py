@@ -46,13 +46,49 @@ def _cache_fresh(kind: str) -> bool:
 # Resemble rejects dataset files over 25 MB — stay safely under it.
 _MAX_DATASET_BYTES = 24 * 1024 * 1024
 
+# Clone-dataset cleanup target loudness (RMS dBFS). Leaves headroom, evens out
+# parts recorded at different levels.
+_CLEAN_TARGET_DBFS = -20.0
 
-async def _build_dataset(storage: StorageManager, urls: list[str]) -> str:
+
+def _clean_segment(seg):
+    """Conservative per-part cleanup for a clone recording: drop sub-voice
+    rumble/hum/DC (high-pass ~70 Hz) and trim dead air at the head/tail. Kept
+    gentle on purpose — aggressive denoise would strip the voice identity the
+    clone needs. No-ops (returns the original) if trimming would gut the clip."""
+    from pydub.silence import detect_leading_silence  # noqa: PLC0415
+
+    cleaned = seg.high_pass_filter(70)
+    lead = detect_leading_silence(cleaned, silence_threshold=-45.0)
+    trail = detect_leading_silence(cleaned.reverse(), silence_threshold=-45.0)
+    trimmed = cleaned[lead : len(cleaned) - trail]
+    # Guard: never return near-empty audio if the clip was quiet throughout.
+    result = trimmed if len(trimmed) >= 500 else cleaned
+    # Level EACH part to the target so parts recorded at different volumes come
+    # out even (normalizing only the concatenation wouldn't fix inter-part gaps).
+    return _normalize_loudness(result)
+
+
+def _normalize_loudness(seg):
+    """Bring a segment to a consistent RMS level (pydub dBFS is RMS). Skips
+    pure silence (dBFS == -inf)."""
+    if seg.dBFS == float("-inf"):
+        return seg
+    return seg.apply_gain(_CLEAN_TARGET_DBFS - seg.dBFS)
+
+
+async def _build_dataset(storage: StorageManager, urls: list[str], clean: bool = True) -> str:
     """Build a single clone-dataset file from one or more recording parts:
     concatenate, cap at the rapid duration budget, and DOWNSAMPLE to mono /
     22.05 kHz / 16-bit. That keeps the file well under Resemble's 25 MB limit
     (~2.6 MB per minute) while preserving voice identity for cloning. Stage it
-    in storage and return a signed URL for dataset_url."""
+    in storage and return a signed URL for dataset_url.
+
+    When `clean` (default), each part is gently cleaned first (high-pass +
+    head/tail silence trim) and the final dataset is loudness-normalized — so
+    parts recorded at different levels come out even and dead air / rumble
+    doesn't pollute the clone. `clean=False` sends the raw concatenation (useful
+    for an A/B comparison of clean vs raw)."""
     from pydub import AudioSegment  # noqa: PLC0415 - heavy import, defer
 
     max_ms = int(get_settings().resemble_clone_max_seconds * 1000)
@@ -62,13 +98,18 @@ async def _build_dataset(storage: StorageManager, urls: list[str]) -> str:
         for i, url in enumerate(urls, start=1):
             src = tmp_dir / f"part_{i:02d}"
             await storage.download(url, src)
-            combined += AudioSegment.from_file(str(src))
+            part = AudioSegment.from_file(str(src))
+            if clean:
+                part = _clean_segment(part)
+            combined += part
             if len(combined) >= max_ms:
                 break
         combined = combined[:max_ms]
         # Normalize: mono, 22.05 kHz, 16-bit — enough for a faithful clone and
         # a fraction of the size of 48 kHz/24-bit stereo source recordings.
         combined = combined.set_channels(1).set_frame_rate(22050).set_sample_width(2)
+        if clean:
+            combined = _normalize_loudness(combined)
 
         out = tmp_dir / "dataset.wav"
         combined.export(str(out), format="wav")
@@ -137,7 +178,7 @@ async def clone_voice(request: CreateVoiceRequest) -> VoiceCreatedResponse:
     # file stays under Resemble's 25 MB limit — 48 kHz/24-bit source recordings
     # blow past it in ~50s otherwise. Applies to single and multi-file uploads.
     try:
-        dataset_url = await _build_dataset(storage, urls)
+        dataset_url = await _build_dataset(storage, urls, clean=request.clean)
     except Exception as e:
         logger.error("dataset_build_failed", error=str(e))
         raise HTTPException(
