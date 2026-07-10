@@ -362,8 +362,19 @@ class JobOrchestrator:
                         char.personality_prompt = db_char.personality_prompt
                         char.style_baseline_tags = db_char.style_baseline_tags
                 characters[speaker] = char
-            return characters
-        return await self._load_characters(request, lines)
+        else:
+            characters = await self._load_characters(request, lines)
+
+        # The per-character style baseline (slow/soft/…) is applied to EVERY
+        # line and stacks on top of the per-line emotion recipe. Deep SSML tag
+        # stacks destabilize resemble-ultra (spurious inserted words / line
+        # restarts), so the baseline is OPT-IN. When it's off, strip it here so
+        # no downstream merge_style can re-introduce it (both the full-generate
+        # and regenerate paths route through this method).
+        if not request.apply_style_baseline:
+            for character in characters.values():
+                character.style_baseline_tags = []
+        return characters
 
     async def _load_characters(
         self,

@@ -59,6 +59,14 @@ class CreateJobRequest(BaseModel):
     # When a line is also in line_overrides, the edited text is the LLM's input.
     reprocess_line_numbers: list[int] = []
 
+    # Apply the per-character style baseline (style_baseline_tags, e.g.
+    # slow/soft) to every line. OFF by default: the baseline stacks on top of
+    # the per-line emotion recipe, and deep SSML tag stacks destabilize
+    # resemble-ultra (it inserts spurious words or restarts the line). Opt in
+    # only when the character's baseline is known to be safe with the emotions
+    # in use.
+    apply_style_baseline: bool = False
+
     # Post-production DSP on each rendered clip (off by default).
     postprocess_enabled: bool = False
     postprocess_compress: bool = True
