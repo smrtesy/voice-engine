@@ -51,7 +51,9 @@ class ResembleAdapter(TTSAdapter):
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=2, min=5, max=60),
+        # Recover fast from a one-off blip: ~1s then ~2s between attempts,
+        # instead of a hard 5s floor that stalled every transient failure.
+        wait=wait_exponential(multiplier=1, min=1, max=30),
         reraise=True,
     )
     async def generate_sts(self, req: GenerateRequest) -> GenerateResult:
@@ -125,7 +127,9 @@ class ResembleAdapter(TTSAdapter):
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=2, min=5, max=60),
+        # Recover fast from a one-off blip: ~1s then ~2s between attempts,
+        # instead of a hard 5s floor that stalled every transient failure.
+        wait=wait_exponential(multiplier=1, min=1, max=30),
         reraise=True,
     )
     async def generate_tts(self, req: GenerateRequest) -> GenerateResult:
