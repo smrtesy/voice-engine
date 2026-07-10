@@ -150,7 +150,8 @@ class JobOrchestrator:
                 )
 
             processed_lines = await self.preprocessor.process_batch(
-                lines, characters, pronunciations, progress_cb=_on_preprocess
+                lines, characters, pronunciations, progress_cb=_on_preprocess,
+                script_language=request.language,
             )
             for processed in processed_lines:
                 await self.lines_repo.update_llm_data(script_id, processed)
@@ -650,6 +651,7 @@ class JobOrchestrator:
                     "cost_usd": (prev or {}).get("generation_cost_usd"),
                     "text_used": (prev or {}).get("tts_body")
                     or (prev or {}).get("text_for_tts"),
+                    "text_spoken": (prev or {}).get("text_for_tts"),
                     "model": prev_req.get("model") if isinstance(prev_req, dict) else None,
                 }
 
@@ -689,6 +691,7 @@ class JobOrchestrator:
                     output_audio_path=previous_take["output_audio_path"],
                     duration_seconds=previous_take.get("duration_seconds"),
                     cost_usd=previous_take.get("cost_usd"),
+                    text_spoken=previous_take.get("text_spoken"),
                 )
             for r in renders:
                 await self.takes_repo.record(
@@ -700,6 +703,9 @@ class JobOrchestrator:
                     output_audio_path=r["storage_path"],
                     duration_seconds=r["duration"],
                     cost_usd=r["cost"],
+                    # Tag-free spoken text, so smrtesy can diff it against the
+                    # line's original to learn which respelling the user kept.
+                    text_spoken=line.text_for_tts,
                     # Multi-voice: every voice is a good, labelled deliverable.
                     approved=multi,
                     voice_label=(r["character"].display_name or r["character"].name)
@@ -952,7 +958,8 @@ class JobOrchestrator:
                     )
                     final_lines.append(
                         await self.preprocessor.process_line(
-                            src_line, character, None, pronunciations
+                            src_line, character, None, pronunciations,
+                            script_language=request.language,
                         )
                     )
                     continue
@@ -973,7 +980,7 @@ class JobOrchestrator:
                     new_text, subs = apply_pronunciations(
                         line.text_for_tts,
                         pronunciations,
-                        character.language if character else None,
+                        request.language or (character.language if character else None),
                     )
                     if subs:
                         line.text_for_tts = new_text

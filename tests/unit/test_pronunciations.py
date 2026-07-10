@@ -7,19 +7,23 @@ from voice_engine.dictionaries.pronunciations import (
 )
 
 
-def test_770_replaced_with_seven_seventy():
+def test_no_builtin_default_770_unchanged():
+    # No hardcoded defaults: a word with no lexicon entry is left untouched.
+    # 770's respelling now lives ONLY in the per-org UI lexicon.
     text, applied = apply_pronunciations("770 סגור?!")
-    assert text == "סעוון סעוונטי סגור?!"
-    assert applied == [{"from": "770", "to": "סעוון סעוונטי"}]
+    assert text == "770 סגור?!"
+    assert applied == []
 
 
 def test_770_inside_longer_number_not_replaced():
-    text, applied = apply_pronunciations("הקוד הוא 17700")
+    # The digit-boundary guard: even with a 770 lexicon entry, "17700" (770 as a
+    # substring of a longer number) must not be rewritten.
+    text, applied = apply_pronunciations("הקוד הוא 17700", {"770": "סעוון סעוונטי"})
     assert text == "הקוד הוא 17700"
     assert applied == []
 
 
-def test_per_org_lexicon_overrides_default():
+def test_per_org_lexicon_applies():
     text, applied = apply_pronunciations("770", {"770": "שבע שבעים"})
     assert text == "שבע שבעים"
     assert applied == [{"from": "770", "to": "שבע שבעים"}]
@@ -113,13 +117,13 @@ def test_language_prefers_latin_variant():
     assert text == "beit"
 
 
-def test_language_none_still_applies_some_variant():
-    # A word with only a non-matching-language entry must still apply (fallback),
-    # not be dropped.
-    text, _ = apply_pronunciations(
+def test_strict_drops_nonmatching_language():
+    # STRICT gating: an 'en'-only entry must NOT apply to a Hebrew script.
+    text, applied = apply_pronunciations(
         "בית", [{"word": "בית", "replacement": "beit", "language": "en"}], "he"
     )
-    assert text == "beit"
+    assert text == "בית"
+    assert applied == []
 
 
 def test_glossary_shows_language_matching_variant():
@@ -153,11 +157,22 @@ def test_language_none_falls_back_deterministically_to_first():
     assert text == "ביית"
 
 
-def test_language_without_matching_entry_still_applies_fallback():
-    # Word only has an 'en' entry but the voice is 'he' → still applied.
-    lex = [{"word": "בית", "replacement": "beit", "language": "en"}]
-    text, _ = apply_pronunciations("בית", lex, language="he")
-    assert text == "beit"
+def test_universal_entry_applies_to_any_language():
+    # An entry with NO language set applies regardless of the script language.
+    lex = [{"word": "בית", "replacement": "ביית"}]
+    assert apply_pronunciations("בית", lex, language="he")[0] == "ביית"
+    assert apply_pronunciations("בית", lex, language="en")[0] == "ביית"
+
+
+def test_matched_language_overrides_universal():
+    # A language-specific entry wins over a no-language entry for the same word.
+    lex = [
+        {"word": "בית", "replacement": "universal"},
+        {"word": "בית", "replacement": "beit", "language": "en"},
+    ]
+    assert apply_pronunciations("בית", lex, language="en")[0] == "beit"
+    # On a Hebrew script the 'en' entry drops, the universal one applies.
+    assert apply_pronunciations("בית", lex, language="he")[0] == "universal"
 
 
 def test_glossary_language_selects_variant():
