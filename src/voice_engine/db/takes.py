@@ -47,6 +47,7 @@ class LineTakesRepository:
         cost_usd: float | None,
         approved: bool = False,
         voice_label: str | None = None,
+        text_spoken: str | None = None,
     ) -> None:
         """Append one take. Best-effort: a failure must never abort a render.
 
@@ -54,6 +55,11 @@ class LineTakesRepository:
         several characters) — each voice's clip is a good, labelled deliverable.
         Single-voice renders keep approved=False (so a regenerate never steals
         the user's manual selection) and no label.
+
+        `text_spoken` is the tag-free spoken text (line.text_for_tts) that this
+        take synthesized. smrtesy diffs it against the line's original text to
+        learn which respelling the user kept — storing it here means the diff is
+        exact instead of guessed by stripping tone tags out of text_used.
         """
         try:
             client = get_supabase()
@@ -70,6 +76,8 @@ class LineTakesRepository:
             }
             if voice_label:
                 row["voice_label"] = voice_label
+            if text_spoken is not None:
+                row["text_spoken"] = text_spoken
             client.table(self.TABLE).insert(row).execute()
         except Exception as e:  # noqa: BLE001 — history is best-effort
             logger.warning("take_record_failed", line_id=str(line_id), error=str(e))
