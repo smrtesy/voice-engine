@@ -180,13 +180,35 @@ class JobOrchestrator:
                     extra={"completed_lines": succeeded, "failed_lines": failed},
                 )
 
+            # Cooperative cancellation: smrtesy flips the job row to 'cancelled'
+            # when the user presses Stop. Poll that flag on a background task and
+            # signal the generation loop to stop launching new lines.
+            cancel_event = asyncio.Event()
+
+            async def _poll_cancel() -> None:
+                try:
+                    while not cancel_event.is_set():
+                        status = await self.jobs_repo.get_status_by_engine_id(job_id)
+                        if status == "cancelled":
+                            logger.info("job_cancel_requested", job_id=str(job_id))
+                            cancel_event.set()
+                            return
+                        await asyncio.sleep(3)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001 — polling is best-effort
+                    logger.warning("cancel_poll_failed", error=str(e))
+
+            poller = asyncio.create_task(_poll_cancel())
             try:
                 results = await self._generate_audio_for_lines(
                     job_id, request, processed_lines, audio_segments,
                     self._build_speaker_voices(request, characters),
                     progress_cb=_on_generate,
+                    cancel_event=cancel_event,
                 )
             finally:
+                poller.cancel()
                 if tmp_root:
                     tmp_root.cleanup()
 
@@ -212,6 +234,30 @@ class JobOrchestrator:
                 started_at=started_at,
                 completed_at=completed_at,
             )
+
+            # Stopped by the user: finalize the script row so the UI leaves the
+            # "generating" state, but do NOT write job 'completed' or send
+            # job.completed — that would flip smrtesy's 'cancelled' back. Lines
+            # already rendered keep their audio + take history.
+            if cancel_event.is_set():
+                await self._set_stage(
+                    request, stage=None, current=lines_succeeded,
+                    total=len(processed_lines), status="audio_ready",
+                    extra={
+                        "completed_lines": lines_succeeded,
+                        "failed_lines": lines_failed,
+                        "total_cost_usd": total_cost,
+                        "total_duration_seconds": total_duration,
+                        "audio_ready_at": completed_at.isoformat(),
+                    },
+                )
+                logger.info(
+                    "job_cancelled",
+                    job_id=str(job_id),
+                    lines_succeeded=lines_succeeded,
+                    lines_skipped=lines_skipped,
+                )
+                return job_result
 
             await self.jobs_repo.update(
                 job_id,
@@ -480,6 +526,7 @@ class JobOrchestrator:
         audio_segments: list[Path] | None,
         speaker_voices: dict[str, list[Character]],
         progress_cb=None,
+        cancel_event: "asyncio.Event | None" = None,
     ) -> list[dict]:
         adapter = get_adapter(request.adapter)
         semaphore = asyncio.Semaphore(self.settings.max_concurrent_lines)
@@ -509,6 +556,19 @@ class JobOrchestrator:
 
         async def process_one(idx: int, line: ProcessedLine) -> dict:
             async with semaphore:
+                # Cooperative stop: once the user cancels, every line that hasn't
+                # started yet short-circuits as skipped the moment it acquires the
+                # semaphore. Lines already in flight (up to max_concurrent) finish.
+                if cancel_event is not None and cancel_event.is_set():
+                    result = {
+                        "success": False,
+                        "skipped": True,
+                        "error": "cancelled",
+                        "duration": 0.0,
+                        "cost": 0.0,
+                    }
+                    await _record_and_report(result)
+                    return result
                 # Index-based segment mapping. If silence detection produced
                 # fewer segments than lines (under-split), trailing lines get
                 # None and the adapter falls back to TTS for them. If it
