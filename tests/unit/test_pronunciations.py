@@ -7,19 +7,23 @@ from voice_engine.dictionaries.pronunciations import (
 )
 
 
-def test_770_replaced_with_seven_seventy():
+def test_no_builtin_default_770_unchanged():
+    # No hardcoded defaults: a word with no lexicon entry is left untouched.
+    # 770's respelling now lives ONLY in the per-org UI lexicon.
     text, applied = apply_pronunciations("770 סגור?!")
-    assert text == "סעוון סעוונטי סגור?!"
-    assert applied == [{"from": "770", "to": "סעוון סעוונטי"}]
+    assert text == "770 סגור?!"
+    assert applied == []
 
 
 def test_770_inside_longer_number_not_replaced():
-    text, applied = apply_pronunciations("הקוד הוא 17700")
+    # The digit-boundary guard: even with a 770 lexicon entry, "17700" (770 as a
+    # substring of a longer number) must not be rewritten.
+    text, applied = apply_pronunciations("הקוד הוא 17700", {"770": "סעוון סעוונטי"})
     assert text == "הקוד הוא 17700"
     assert applied == []
 
 
-def test_per_org_lexicon_overrides_default():
+def test_per_org_lexicon_applies():
     text, applied = apply_pronunciations("770", {"770": "שבע שבעים"})
     assert text == "שבע שבעים"
     assert applied == [{"from": "770", "to": "שבע שבעים"}]

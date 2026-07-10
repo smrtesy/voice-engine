@@ -12,26 +12,27 @@ assume a language. The choice of notation is made per-word by whoever authored
 the lexicon entry.
 
 Two shapes are accepted:
-  * dict[str, str] — {original_word: replacement}. Used for the built-in
-    DEFAULT_PRONUNCIATIONS and the legacy per-org map.
+  * dict[str, str] — {original_word: replacement}. The legacy per-org map.
   * list[dict]     — [{word|original_word, replacement|pronounced_as,
     language?}]. The shape smrtesy sends in the job payload.
 
-Per-org entries override the built-in defaults. The longest original is
-matched first so a phrase wins over a shorter substring inside it.
+Per-org lexicon entries (authored in the app UI) are the ONLY source — there
+are no built-in defaults (DEFAULT_PRONUNCIATIONS is empty). The longest
+original is matched first so a phrase wins over a shorter substring inside it.
 """
 
 from __future__ import annotations
 
 import re
 
-# Global defaults, applied to every org. Per-org lexicon entries override these.
-# NOTE: values here are PHONETIC RESPELLINGS, never niqqud.
-DEFAULT_PRONUNCIATIONS: dict[str, str] = {
-    # 770 → "seven seventy" (how Chabad says it; matches the scripts' own
-    # transliteration "סעוון סעוונטי"). Tune per-org via the lexicon if needed.
-    "770": "סעוון סעוונטי",
-}
+# Intentionally EMPTY. Pronunciation fixes are authored per-org in the app's
+# Pronunciation-lexicon UI (smrtvoice_pronunciation_lexicon) and are the ONLY
+# source — nothing is hardcoded here. A built-in default would silently force a
+# respelling on every org (e.g. "770" → a Chabad transliteration) that a tenant
+# can neither see nor remove from the UI; the user asked that all pronunciation
+# settings live in the UI. Kept as a dict so the merge in apply_pronunciations
+# stays a no-op base rather than a special case.
+DEFAULT_PRONUNCIATIONS: dict[str, str] = {}
 
 
 def normalize_lexicon(
