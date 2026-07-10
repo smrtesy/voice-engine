@@ -1,11 +1,34 @@
 """Tests for post-production DSP (compressor + WSOLA)."""
 
 import numpy as np
-from voice_engine.audio.postprocess import compress, time_stretch
+from voice_engine.audio.postprocess import (
+    _follow_envelope,
+    _follow_envelope_py,
+    compress,
+    time_stretch,
+)
 
 
 def _rms(a: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.square(a)))) if a.size else 0.0
+
+
+def test_envelope_follower_matches_reference():
+    # The JIT'd/active follower must compute the IDENTICAL envelope as the
+    # pure-Python reference — the whole point of the optimization is speed with
+    # no change to the audio. Exercise a rising+falling signal so both the
+    # attack and release coefficient branches are hit.
+    sr = 48000
+    t = np.arange(sr // 4) / sr
+    x = (0.1 * np.sin(2 * np.pi * 220 * t)).astype(np.float64)
+    x[sr // 8 : sr // 8 + 2000] = 0.9  # loud burst then back to quiet
+    ax = np.abs(x)
+    atk = float(np.exp(-1.0 / (sr * 5.0 / 1000.0)))
+    rel = float(np.exp(-1.0 / (sr * 50.0 / 1000.0)))
+
+    fast = np.asarray(_follow_envelope(ax, atk, rel))
+    ref = _follow_envelope_py(ax, atk, rel)
+    np.testing.assert_allclose(fast, ref, rtol=1e-9, atol=1e-9)
 
 
 def test_compressor_reduces_dynamic_range_without_silencing():

@@ -576,9 +576,8 @@ class JobOrchestrator:
             input_audio_url = await self.storage.create_signed_url(input_path)
 
         multi = len(voices) > 1
-        renders: list[dict] = []
-        errors: list[str] = []
-        for character in voices:
+
+        def _body_tags_for(character: Character) -> tuple[str, list[dict]]:
             # Multi-voice: recompose the body per voice so each character keeps
             # its own style baseline ("melody"). Single-voice: reuse the line's
             # already-composed body/tags verbatim (preserves verbatim edits and
@@ -588,13 +587,25 @@ class JobOrchestrator:
                     baseline_tags(character.style_baseline_tags),
                     tags_for_emotion(line.emotion, line.emotion_source),
                 )
-                body = compose_body(line.text_for_tts, tags)
-            else:
-                tags = line.tags or []
-                body = line.tts_body or line.text_for_tts
-            r = await self._render_clip(
+                return compose_body(line.text_for_tts, tags), tags
+            return (line.tts_body or line.text_for_tts), (line.tags or [])
+
+        async def _render_voice(character: Character) -> dict:
+            body, tags = _body_tags_for(character)
+            return await self._render_clip(
                 request, line, character, body, tags, input_audio_url, adapter, script_id
             )
+
+        # Render every cast voice concurrently. A single-voice line is a
+        # one-element gather (identical to the old serial path); a multi-voice
+        # line now issues its Resemble calls in parallel instead of one after
+        # another — the win for a redo of a line cast to several voices.
+        # gather preserves input order, so renders[0] stays the representative
+        # (first-cast) voice and the take order is unchanged.
+        rendered = await asyncio.gather(*(_render_voice(c) for c in voices))
+        renders: list[dict] = []
+        errors: list[str] = []
+        for r in rendered:
             if r.get("ok"):
                 renders.append(r)
             else:
