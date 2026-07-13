@@ -1,5 +1,6 @@
 """smrtvoice_jobs table access. Skeleton."""
 
+import asyncio
 from uuid import UUID
 
 from voice_engine.storage.supabase_client import get_supabase
@@ -12,23 +13,25 @@ class JobsRepository:
 
     async def create(self, job_data: dict) -> dict:
         client = get_supabase()
-        result = client.table(self.TABLE).insert(job_data).execute()
+        query = client.table(self.TABLE).insert(job_data)
+        result = await asyncio.to_thread(query.execute)
         return result.data[0] if result.data else {}
 
     async def get(self, job_id: UUID) -> dict | None:
         client = get_supabase()
-        result = (
+        query = (
             client.table(self.TABLE)
             .select("*")
             .eq("id", str(job_id))
             .maybe_single()
-            .execute()
         )
+        result = await asyncio.to_thread(query.execute)
         return result.data if result.data else None
 
     async def update(self, job_id: UUID, fields: dict) -> None:
         client = get_supabase()
-        client.table(self.TABLE).update(fields).eq("id", str(job_id)).execute()
+        query = client.table(self.TABLE).update(fields).eq("id", str(job_id))
+        await asyncio.to_thread(query.execute)
 
     async def update_status(self, job_id: UUID, status: str) -> None:
         await self.update(job_id, {"status": status})
@@ -41,12 +44,12 @@ class JobsRepository:
         to 'cancelled', which the worker polls here to stop a running job.
         """
         client = get_supabase()
-        result = (
+        query = (
             client.table(self.TABLE)
             .select("status")
             .eq("voice_engine_job_id", str(engine_job_id))
             .limit(1)
-            .execute()
         )
+        result = await asyncio.to_thread(query.execute)
         rows = result.data or []
         return rows[0].get("status") if rows else None

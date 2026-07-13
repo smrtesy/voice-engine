@@ -1,5 +1,6 @@
 """smrtvoice_lines table access."""
 
+import asyncio
 from datetime import UTC
 from uuid import UUID
 
@@ -39,11 +40,10 @@ class LinesRepository:
             return []
         # Upsert so re-parsing the same script doesn't fail on the
         # (script_id, line_number) collision.
-        result = (
-            client.table(self.TABLE)
-            .upsert(rows, on_conflict="script_id,line_number")
-            .execute()
+        query = client.table(self.TABLE).upsert(
+            rows, on_conflict="script_id,line_number"
         )
+        result = await asyncio.to_thread(query.execute)
         return result.data or []
 
     async def update_llm_data(
@@ -56,7 +56,7 @@ class LinesRepository:
         from datetime import datetime
 
         client = get_supabase()
-        client.table(self.TABLE).update(
+        query = client.table(self.TABLE).update(
             {
                 "llm_processed": True,
                 "llm_processed_at": datetime.now(UTC).isoformat(),
@@ -78,7 +78,8 @@ class LinesRepository:
             }
         ).eq("script_id", str(script_id)).eq(
             "line_number", processed.line_number
-        ).execute()
+        )
+        await asyncio.to_thread(query.execute)
 
     async def mark_completed(
         self,
@@ -125,9 +126,10 @@ class LinesRepository:
             fields["emotion"] = emotion
         if emotion_source is not None:
             fields["emotion_source"] = emotion_source
-        client.table(self.TABLE).update(fields).eq(
+        query = client.table(self.TABLE).update(fields).eq(
             "script_id", str(script_id)
-        ).eq("line_number", line_number).execute()
+        ).eq("line_number", line_number)
+        await asyncio.to_thread(query.execute)
 
     async def get_output_row(
         self, script_id: UUID, line_number: int
@@ -135,7 +137,7 @@ class LinesRepository:
         """The current render's stored fields, read BEFORE mark_completed
         overwrites them — used to preserve the prior clip as a take."""
         client = get_supabase()
-        result = (
+        query = (
             client.table(self.TABLE)
             .select(
                 "output_audio_path, output_duration_seconds, "
@@ -144,8 +146,8 @@ class LinesRepository:
             .eq("script_id", str(script_id))
             .eq("line_number", line_number)
             .maybe_single()
-            .execute()
         )
+        result = await asyncio.to_thread(query.execute)
         return result.data or None
 
     async def get_lines_by_numbers(
@@ -155,14 +157,14 @@ class LinesRepository:
         if not line_numbers:
             return []
         client = get_supabase()
-        result = (
+        query = (
             client.table(self.TABLE)
             .select("*")
             .eq("script_id", str(script_id))
             .in_("line_number", line_numbers)
             .order("line_number")
-            .execute()
         )
+        result = await asyncio.to_thread(query.execute)
         return result.data or []
 
     async def mark_failed(
@@ -172,12 +174,13 @@ class LinesRepository:
         error_message: str,
     ) -> None:
         client = get_supabase()
-        client.table(self.TABLE).update(
+        query = client.table(self.TABLE).update(
             {
                 "status": "failed",
                 "error_message": error_message,
             }
-        ).eq("script_id", str(script_id)).eq("line_number", line_number).execute()
+        ).eq("script_id", str(script_id)).eq("line_number", line_number)
+        await asyncio.to_thread(query.execute)
 
     async def mark_skipped(
         self,
@@ -186,23 +189,24 @@ class LinesRepository:
         reason: str,
     ) -> None:
         client = get_supabase()
-        client.table(self.TABLE).update(
+        query = client.table(self.TABLE).update(
             {
                 "status": "skipped",
                 "error_message": reason,
             }
-        ).eq("script_id", str(script_id)).eq("line_number", line_number).execute()
+        ).eq("script_id", str(script_id)).eq("line_number", line_number)
+        await asyncio.to_thread(query.execute)
 
     async def get_id(self, script_id: UUID, line_number: int) -> UUID | None:
         client = get_supabase()
-        result = (
+        query = (
             client.table(self.TABLE)
             .select("id")
             .eq("script_id", str(script_id))
             .eq("line_number", line_number)
             .maybe_single()
-            .execute()
         )
+        result = await asyncio.to_thread(query.execute)
         if not result.data:
             return None
         return UUID(result.data["id"])
