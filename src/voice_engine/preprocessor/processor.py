@@ -1,5 +1,6 @@
 """LLM Preprocessor - main logic."""
 
+import asyncio
 import json
 
 import structlog
@@ -79,6 +80,8 @@ class LLMPreprocessor:
         self.model = model_override or settings.llm_model
         self.max_tokens = settings.llm_max_tokens
         self.temperature = settings.llm_temperature
+        # How many per-line LLM calls run at once in process_batch.
+        self.max_concurrent = settings.max_concurrent_preprocess
 
     async def process_line(
         self,
@@ -232,25 +235,64 @@ class LLMPreprocessor:
         progress_cb=None,
         script_language: str | None = None,
     ) -> list[ProcessedLine]:
-        processed: list[ProcessedLine] = []
-        total = sum(1 for line in lines if line.speaker_name in characters)
+        """Preprocess every cast line, running the per-line LLM calls with
+        bounded concurrency (``max_concurrent_preprocess``).
+
+        Output order matches the source-line order of the cast lines: the STS
+        path maps split audio segments to ``processed_lines`` by index, so this
+        must stay stable regardless of which call finishes first. The two-line
+        context each line sees is taken from the SOURCE lines by position, so it
+        is identical to the old serial behaviour — parallelizing does not change
+        what the model reads.
+        """
+        # Only lines cast to a voice are preprocessed; the rest are dropped
+        # (they're skipped in the render loop too). Keep each cast line's
+        # original index so results land back in script order.
+        cast: list[tuple[int, ScriptLine]] = []
         for i, line in enumerate(lines):
-            character = characters.get(line.speaker_name)
-            if not character:
+            if line.speaker_name in characters:
+                cast.append((i, line))
+            else:
                 logger.warning(
                     "character_not_found",
                     speaker=line.speaker_name,
                     line_number=line.line_number,
                 )
-                continue
 
-            context = lines[max(0, i - 2) : i]
-            processed.append(
-                await self.process_line(
+        total = len(cast)
+        if total == 0:
+            return []
+
+        results: list[ProcessedLine | None] = [None] * total
+        semaphore = asyncio.Semaphore(self.max_concurrent)
+        counter = {"done": 0}
+        counter_lock = asyncio.Lock()
+
+        async def _run(slot: int, src_index: int, line: ScriptLine) -> None:
+            character = characters[line.speaker_name]
+            context = lines[max(0, src_index - 2) : src_index]
+            async with semaphore:
+                processed = await self.process_line(
                     line, character, context, pronunciations, script_language
                 )
-            )
+            results[slot] = processed
+            # Report progress as each line lands. Do it under a lock with a
+            # single counter so the count the UI sees only ever climbs, even
+            # though the lines finish out of order.
             if progress_cb is not None:
-                await progress_cb(len(processed), total)
+                async with counter_lock:
+                    counter["done"] += 1
+                    await progress_cb(counter["done"], total)
 
-        return processed
+        await asyncio.gather(
+            *(
+                _run(slot, src_index, line)
+                for slot, (src_index, line) in enumerate(cast)
+            )
+        )
+
+        # Every cast line produces a ProcessedLine (process_line falls back to
+        # the raw text on any API failure and never returns None), so the list
+        # is fully populated; the filter is a defensive no-op that also narrows
+        # the type back to list[ProcessedLine].
+        return [p for p in results if p is not None]

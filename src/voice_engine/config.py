@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     retry_backoff_base: int = 2
     job_timeout_seconds: int = 3600
     max_concurrent_lines: int = 5
+    # LLM preprocessing (emotion/niqqud/prompt) runs one Anthropic call per cast
+    # line. It used to run strictly serially, so an 85-line script spent minutes
+    # in "preprocessing" before the first audio byte. Run these calls with
+    # bounded concurrency instead — the whole batch finishes ~this-many-times
+    # faster while staying well under Anthropic's rate limits.
+    max_concurrent_preprocess: int = 8
     webhook_retry_max: int = 5
 
     # Cost control
