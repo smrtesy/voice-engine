@@ -3,6 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -81,6 +82,18 @@ class Settings(BaseSettings):
     # Cost control
     default_monthly_budget_usd: float = 100.0
     cost_check_before_job: bool = True
+
+    @model_validator(mode="after")
+    def _force_ultra_default_model(self) -> "Settings":
+        """The hidden fallback model must be resemble-ultra, never the deprecated
+        chatterbox. Migration 20260630130000 retired chatterbox as the Hebrew
+        default; mirror that here so a stale or mistaken RESEMBLE_DEFAULT_MODEL
+        env value can't silently drag generation back to the old model. Only an
+        empty or legacy-`chatterbox` value is coerced — explicit non-legacy
+        choices (e.g. chatterbox-turbo) are respected."""
+        if self.resemble_default_model.strip().lower() in ("", "chatterbox"):
+            self.resemble_default_model = "resemble-ultra"
+        return self
 
 
 @lru_cache
