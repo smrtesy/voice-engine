@@ -18,6 +18,14 @@ logger = structlog.get_logger()
 # Any Hebrew letter (used to auto-detect the Hebrew tab by its title).
 HEBREW_CHAR = re.compile(r"[֐-׿]")
 
+# Ordered-list glyphs. Google Docs stores the *style* of a list, not the
+# rendered "1." / "2." digits, so the numbers never appear in the API text.
+# For these numeric styles we re-render a running number in front of the
+# paragraph, so the script parser recognises them as numbered dialogue.
+NUMBERED_GLYPHS = frozenset(
+    {"DECIMAL", "ZERO_DECIMAL", "ALPHA", "UPPER_ALPHA", "ROMAN", "UPPER_ROMAN"}
+)
+
 
 class GoogleDocsClient:
     """
@@ -108,24 +116,55 @@ class GoogleDocsClient:
                     document_id=document_id,
                     tab_title=self._tab_title(tab),
                 )
-                content = (
-                    tab.get("documentTab", {})
-                    .get("body", {})
-                    .get("content", [])
-                )
-                return self._extract_text(content)
+                doc_tab = tab.get("documentTab", {}) or {}
+                content = doc_tab.get("body", {}).get("content", [])
+                return self._extract_text(content, doc_tab.get("lists", {}) or {})
 
         # Legacy fallback: no tabs in the response (older document).
-        return self._extract_text(doc.get("body", {}).get("content", []))
+        return self._extract_text(
+            doc.get("body", {}).get("content", []), doc.get("lists", {}) or {}
+        )
 
-    def _extract_text(self, content: list) -> str:
+    def _extract_text(self, content: list, lists: dict | None = None) -> str:
+        """Flatten a document body — including table cells — to newline text.
+
+        Content inside tables (the studio template puts whole segments —
+        Intro, Episode Question, Birthdays, Moshiach Meeting, Sign Off — in
+        single-cell tables) was previously dropped entirely, so every
+        character in those segments went missing. We now recurse into tables.
+        """
         parts: list[str] = []
-        for element in content:
-            if "paragraph" in element:
-                parts.append(self._extract_paragraph_text(element["paragraph"]))
+        # Running number so ordered-list dialogue gets an explicit line number
+        # (mutable box so the counter is shared across the recursion).
+        counter = [0]
+        self._collect_text(content, parts, lists or {}, counter)
         return "\n".join(parts)
 
-    def _extract_paragraph_text(self, paragraph: dict) -> str:
+    def _collect_text(
+        self, content: list, parts: list[str], lists: dict, counter: list[int]
+    ) -> None:
+        for element in content or []:
+            if "paragraph" in element:
+                parts.append(
+                    self._extract_paragraph_text(element["paragraph"], lists, counter)
+                )
+            elif "table" in element:
+                for row in element["table"].get("tableRows", []) or []:
+                    for cell in row.get("tableCells", []) or []:
+                        self._collect_text(
+                            cell.get("content", []), parts, lists, counter
+                        )
+            elif "tableOfContents" in element:
+                self._collect_text(
+                    element["tableOfContents"].get("content", []),
+                    parts,
+                    lists,
+                    counter,
+                )
+
+    def _extract_paragraph_text(
+        self, paragraph: dict, lists: dict | None = None, counter: list[int] | None = None
+    ) -> str:
         out: list[str] = []
         for element in paragraph.get("elements", []):
             if "textRun" not in element:
@@ -140,7 +179,31 @@ class GoogleDocsClient:
                 content = f"*{content.strip()}*"
 
             out.append(content)
-        return "".join(out).strip()
+        text = "".join(out).strip()
+
+        # Re-render the ordinal for numbered-list items so the script parser
+        # sees "<n>. <speaker>: <text>". Unordered (bullet) lists — e.g. the
+        # production checklist — are left alone so they never look like dialogue.
+        if text and counter is not None and self._is_numbered_list_item(paragraph, lists or {}):
+            counter[0] += 1
+            text = f"{counter[0]}. {text}"
+        return text
+
+    @staticmethod
+    def _is_numbered_list_item(paragraph: dict, lists: dict) -> bool:
+        bullet = paragraph.get("bullet")
+        if not bullet:
+            return False
+        list_id = bullet.get("listId")
+        level = bullet.get("nestingLevel", 0) or 0
+        nesting = (
+            (lists.get(list_id, {}) or {})
+            .get("listProperties", {})
+            .get("nestingLevels", [])
+        )
+        if 0 <= level < len(nesting):
+            return nesting[level].get("glyphType", "") in NUMBERED_GLYPHS
+        return False
 
 
 def extract_doc_id_from_url(url: str) -> str | None:

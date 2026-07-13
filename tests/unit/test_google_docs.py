@@ -1,0 +1,83 @@
+"""Tests for Google-Docs text extraction (tables + ordered-list numbering).
+
+These exercise the pure extraction helpers on synthetic Docs-API structures,
+so no network / OAuth is involved.
+"""
+
+from voice_engine.parsers.google_docs import GoogleDocsClient
+from voice_engine.parsers.script import parse_script
+
+
+def _client() -> GoogleDocsClient:
+    # Bypass __init__ (which would build a networked Docs service).
+    return object.__new__(GoogleDocsClient)
+
+
+def _run(text: str, *, bold: bool = False, italic: bool = False) -> dict:
+    return {"textRun": {"content": text, "textStyle": {"bold": bold, "italic": italic}}}
+
+
+def _para(runs: list[dict], *, bullet: dict | None = None) -> dict:
+    paragraph: dict = {"elements": runs}
+    if bullet is not None:
+        paragraph["bullet"] = bullet
+    return {"paragraph": paragraph}
+
+
+def _table(cells: list[list[dict]]) -> dict:
+    return {"table": {"tableRows": [{"tableCells": [{"content": c} for c in cells]}]}}
+
+
+# One decimal ordered list (dialogue) and one bullet list (checklist).
+LISTS = {
+    "ordered": {"listProperties": {"nestingLevels": [{"glyphType": "DECIMAL"}]}},
+    "bullets": {"listProperties": {"nestingLevels": [{"glyphType": "GLYPH_TYPE_UNSPECIFIED"}]}},
+}
+ORDERED = {"listId": "ordered", "nestingLevel": 0}
+BULLET = {"listId": "bullets", "nestingLevel": 0}
+
+
+def test_table_cell_content_is_extracted() -> None:
+    # The Intro/Birthdays/etc. segments live inside single-cell tables; their
+    # characters used to be dropped completely.
+    content = [
+        _table(
+            [
+                [
+                    _para([_run("WUMP", bold=True), _run(": Yay!")], bullet=ORDERED),
+                    _para([_run("Moish", bold=True), _run(": Something.")], bullet=ORDERED),
+                ]
+            ]
+        )
+    ]
+    text = _client()._extract_text(content, LISTS)
+
+    assert "WUMP" in text and "Moish" in text
+    lines, _ = parse_script(text)
+    assert {ln.speaker_name for ln in lines} == {"WUMP", "Moish"}
+
+
+def test_ordered_list_items_get_running_numbers() -> None:
+    content = [
+        _para([_run("Sammy", bold=True), _run(": Hi")], bullet=ORDERED),
+        _para([_run("Yudi", bold=True), _run(": Hello")], bullet=ORDERED),
+    ]
+    text = _client()._extract_text(content, LISTS)
+
+    assert text.splitlines() == ["1. **Sammy**: Hi", "2. **Yudi**: Hello"]
+
+
+def test_bullet_checklist_items_are_not_numbered() -> None:
+    # A bullet (unordered) "Length: 2000" must not be turned into "1. Length: …"
+    # and become a fake speaker.
+    content = [_para([_run("Length", bold=True), _run(": 2000")], bullet=BULLET)]
+    text = _client()._extract_text(content, LISTS)
+
+    assert not text.startswith("1.")
+    lines, _ = parse_script(text)
+    assert all(ln.speaker_name != "Length" for ln in lines)
+
+
+def test_plain_paragraphs_still_extracted_without_lists_map() -> None:
+    content = [_para([_run("hello world")])]
+    assert _client()._extract_text(content, {}) == "hello world"

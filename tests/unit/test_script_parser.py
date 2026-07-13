@@ -104,3 +104,65 @@ def test_bracketed_production_note_skipped() -> None:
 
     assert len(lines) == 1
     assert lines[0].line_number == 5
+
+
+# ─── Google-Docs bold-label format (MyMaor Weekly, English) ──────────────────
+
+
+def test_numbered_colon_inside_bold_captures_speaker() -> None:
+    # As produced by google_docs after re-numbering an ordered list. The colon
+    # sits INSIDE the bold markers — the old parser dropped these entirely.
+    text = (
+        "1. **Sammy**: I have an amazing business idea!\n"
+        "2. **Yudi:** Really? What's the idea?"
+    )
+    lines, _ = parse_script(text)
+
+    assert [ln.speaker_name for ln in lines] == ["Sammy", "Yudi"]
+    assert lines[1].text_clean == "Really? What's the idea?"
+    assert "*" not in lines[1].text_clean
+
+
+def test_speaker_qualifier_stripped_from_name() -> None:
+    text = "3. **Mommy Meshinsky** (off-screen): Yudi! Time to go!"
+    lines, _ = parse_script(text)
+
+    assert lines[0].speaker_name == "Mommy Meshinsky"
+    assert lines[0].text_clean == "Yudi! Time to go!"
+
+
+def test_colon_inside_bold_without_number_still_parses() -> None:
+    lines, _ = parse_script("**WUMP:** Yay!")
+
+    assert len(lines) == 1
+    assert lines[0].speaker_name == "WUMP"
+    assert lines[0].text_clean == "Yay!"
+
+
+def test_bold_metadata_row_is_not_a_speaker() -> None:
+    # "**Length:** 2000" looks just like a colon-inside speaker line but is a
+    # template metadata row — it must never become a castable character.
+    lines, _ = parse_script("**Length:** Office: 2000, Main story: 2500")
+
+    assert all(ln.speaker_name != "Length" for ln in lines)
+
+
+def test_english_scene_header_detected() -> None:
+    text = "**Scene 1**\n1. **Sammy**: Look at this!"
+    lines, _ = parse_script(text)
+
+    assert lines[0].scene_title == "Scene 1"
+
+
+def test_bold_italic_direction_line_dropped_not_spoken() -> None:
+    text = (
+        "1. **Sammy**: Look at this!\n"
+        "***He shows Yudi a video of a robotic machine writing.***\n"
+        "2. **Yudi**: I'm not following."
+    )
+    lines, _ = parse_script(text)
+
+    # The stage-direction paragraph must not merge into a dialogue line.
+    assert [ln.speaker_name for ln in lines] == ["Sammy", "Yudi"]
+    assert "robotic machine" not in lines[0].text_clean
+    assert lines[0].text_clean == "Look at this!"
