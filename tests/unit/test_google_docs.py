@@ -87,27 +87,36 @@ def _tab(title: str, tab_id: str = "") -> dict:
     return {"tabProperties": {"title": title, "tabId": tab_id or title}}
 
 
-def test_auto_selects_narration_tab_over_points() -> None:
+def test_english_selects_narration_over_points() -> None:
     # An all-English doc with two tabs: the script lives in "Narration".
     tabs = [_tab("Points"), _tab("Narration")]
-    chosen = _client()._select_tab(tabs, tab_id=None, tab_title=None)
+    chosen = _client()._select_tab(tabs, None, None, language="en")
     assert _client()._tab_title(chosen) == "Narration"
 
 
-def test_narration_wins_even_over_hebrew_tab() -> None:
+def test_english_narration_wins_even_over_hebrew_tab() -> None:
     tabs = [_tab("עברית"), _tab("Narration")]
-    chosen = _client()._select_tab(tabs, tab_id=None, tab_title=None)
+    chosen = _client()._select_tab(tabs, None, None, language="en")
     assert _client()._tab_title(chosen) == "Narration"
 
 
-def test_falls_back_to_hebrew_then_first_tab() -> None:
-    hebrew = _client()._select_tab([_tab("Points"), _tab("עברית")], None, None)
-    assert _client()._tab_title(hebrew) == "עברית"
-    first = _client()._select_tab([_tab("Points"), _tab("Other")], None, None)
+def test_hebrew_selects_hebrew_titled_tab() -> None:
+    # Even a partially-Hebrew title counts, and it wins over Narration for 'he'.
+    tabs = [_tab("Narration"), _tab("תמלול Hebrew")]
+    chosen = _client()._select_tab(tabs, None, None, language="he")
+    assert _client()._tab_title(chosen) == "תמלול Hebrew"
+
+
+def test_cross_fallback_and_first_tab() -> None:
+    # 'en' but no Narration tab → fall back to the Hebrew tab.
+    heb = _client()._select_tab([_tab("Points"), _tab("עברית")], None, None, language="en")
+    assert _client()._tab_title(heb) == "עברית"
+    # Nothing matches → first tab.
+    first = _client()._select_tab([_tab("Points"), _tab("Other")], None, None, language="he")
     assert _client()._tab_title(first) == "Points"
 
 
 def test_explicit_tab_id_still_wins() -> None:
     tabs = [_tab("Points", "p1"), _tab("Narration", "n1")]
-    chosen = _client()._select_tab(tabs, tab_id="p1", tab_title=None)
+    chosen = _client()._select_tab(tabs, tab_id="p1", tab_title=None, language="en")
     assert _client()._tab_id(chosen) == "p1"

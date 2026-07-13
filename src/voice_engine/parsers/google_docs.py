@@ -78,16 +78,20 @@ class GoogleDocsClient:
         tabs: list[dict],
         tab_id: str | None,
         tab_title: str | None,
+        language: str | None = None,
     ) -> dict | None:
-        """Pick a tab by id, then exact title, then by content heuristics.
+        """Pick a tab by id, then exact title, then by the script's language.
 
-        Auto-selection order:
-          1. the "Narration" tab — that's the tab that holds the script to be
-             recorded (the studio template uses a "Points" tab and a
-             "Narration" tab; both may be English), so it wins even over the
-             Hebrew heuristic;
-          2. a Hebrew-titled tab (legacy Hebrew documents);
-          3. the first tab.
+        Auto-selection is driven by the script's language:
+          * English (`language == "en"`) → the tab whose title says
+            "Narration" (the studio template ships a "Points" tab and a
+            "Narration" tab; in an English document both titles are English,
+            so language alone can't tell them apart — the title does);
+          * Hebrew (`language == "he"` or unset) → a tab whose title contains
+            any Hebrew letter (partial Hebrew titles count).
+
+        Whichever the language, we then cross-fall-back (Narration → Hebrew)
+        and finally to the first tab, so a real tab is always returned.
         """
         if not tabs:
             return None
@@ -100,43 +104,67 @@ class GoogleDocsClient:
             for t in tabs:
                 if self._tab_title(t).strip() == wanted:
                     return t
-        # Auto: prefer the tab that holds the script — its title says so.
+
+        is_english = (language or "").strip().lower().startswith("en")
+        prefer = (
+            [self._narration_tab, self._hebrew_tab]
+            if is_english
+            else [self._hebrew_tab, self._narration_tab]
+        )
+        for finder in prefer:
+            if match := finder(tabs):
+                return match
+        # Otherwise the first tab.
+        return tabs[0]
+
+    def _narration_tab(self, tabs: list[dict]) -> dict | None:
         for t in tabs:
             if "narration" in self._tab_title(t).strip().lower():
                 return t
-        # Then a Hebrew-titled tab (older Hebrew-only documents).
+        return None
+
+    def _hebrew_tab(self, tabs: list[dict]) -> dict | None:
         for t in tabs:
             if HEBREW_CHAR.search(self._tab_title(t)):
                 return t
-        # Otherwise the first tab.
-        return tabs[0]
+        return None
 
     def fetch_document_text(
         self,
         document_id: str,
         tab_id: str | None = None,
         tab_title: str | None = None,
-    ) -> str:
-        """Fetch the text of one tab (Hebrew by default) or the legacy body."""
+        language: str | None = None,
+    ) -> tuple[str, dict | None]:
+        """Fetch one tab's text plus which tab was read.
+
+        Returns ``(text, selected_tab)`` where ``selected_tab`` is
+        ``{"id", "title"}`` for the tab actually read (``None`` for the legacy
+        no-tabs body). Callers surface the selected tab so the UI can always
+        show which tab the script was read from.
+        """
         doc = self._get_document(document_id, with_tabs=True)
         tabs = self._flatten_tabs(doc.get("tabs", []))
 
         if tabs:
-            tab = self._select_tab(tabs, tab_id, tab_title)
+            tab = self._select_tab(tabs, tab_id, tab_title, language)
             if tab is not None:
                 logger.info(
                     "google_docs_tab_selected",
                     document_id=document_id,
                     tab_title=self._tab_title(tab),
+                    language=language,
                 )
                 doc_tab = tab.get("documentTab", {}) or {}
                 content = doc_tab.get("body", {}).get("content", [])
-                return self._extract_text(content, doc_tab.get("lists", {}) or {})
+                text = self._extract_text(content, doc_tab.get("lists", {}) or {})
+                return text, {"id": self._tab_id(tab), "title": self._tab_title(tab)}
 
         # Legacy fallback: no tabs in the response (older document).
-        return self._extract_text(
+        text = self._extract_text(
             doc.get("body", {}).get("content", []), doc.get("lists", {}) or {}
         )
+        return text, None
 
     def _extract_text(self, content: list, lists: dict | None = None) -> str:
         """Flatten a document body — including table cells — to newline text.

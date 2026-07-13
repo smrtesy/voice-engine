@@ -31,10 +31,11 @@ async def parse_script_endpoint(request: ParseScriptRequest) -> ParseScriptRespo
 
     try:
         client = GoogleDocsClient(request.google_oauth_token)
-        text = client.fetch_document_text(
+        text, selected_tab = client.fetch_document_text(
             request.google_doc_id,
             tab_id=request.google_doc_tab_id,
             tab_title=request.google_doc_tab_title,
+            language=request.language,
         )
     except Exception as e:
         logger.error("google_docs_fetch_failed", error=str(e))
@@ -70,6 +71,7 @@ async def parse_script_endpoint(request: ParseScriptRequest) -> ParseScriptRespo
         speaker_line_counts=speaker_line_counts,
         warnings=warnings,
         preview=preview,
+        selected_tab=selected_tab,
     )
 
 
