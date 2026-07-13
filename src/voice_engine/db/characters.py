@@ -1,5 +1,6 @@
 """smrtvoice_characters table access."""
 
+import asyncio
 from uuid import UUID
 
 from voice_engine.models.domain import Character
@@ -11,28 +12,28 @@ class CharactersRepository:
 
     async def get_by_name(self, org_id: UUID, name: str) -> Character | None:
         client = get_supabase()
-        result = (
+        query = (
             client.table(self.TABLE)
             .select("*")
             .eq("org_id", str(org_id))
             .eq("name", name)
             .eq("is_active", True)
             .maybe_single()
-            .execute()
         )
+        result = await asyncio.to_thread(query.execute)
         if not result or not result.data:
             return None
         return self._to_model(result.data)
 
     async def get(self, character_id: UUID) -> Character | None:
         client = get_supabase()
-        result = (
+        query = (
             client.table(self.TABLE)
             .select("*")
             .eq("id", str(character_id))
             .maybe_single()
-            .execute()
         )
+        result = await asyncio.to_thread(query.execute)
         if not result or not result.data:
             return None
         return self._to_model(result.data)

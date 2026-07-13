@@ -1,5 +1,6 @@
 """smrtvoice_pronunciation_lexicon table access."""
 
+import asyncio
 from uuid import UUID
 
 import structlog
@@ -17,12 +18,12 @@ class LexiconRepository:
         error returns an empty map so synthesis still runs with defaults."""
         try:
             client = get_supabase()
-            result = (
+            query = (
                 client.table(self.TABLE)
                 .select("original_word, pronounced_as")
                 .eq("org_id", str(org_id))
-                .execute()
             )
+            result = await asyncio.to_thread(query.execute)
         except Exception as e:  # noqa: BLE001 — lexicon must never break a job
             logger.warning("lexicon_fetch_failed", error=str(e))
             return {}

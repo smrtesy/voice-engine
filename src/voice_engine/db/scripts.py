@@ -7,6 +7,7 @@ callback URL is misconfigured, which left the UI stuck on "starting soon" while
 the worker was actually busy fetching/parsing/preprocessing.
 """
 
+import asyncio
 from uuid import UUID
 
 from voice_engine.storage.supabase_client import get_supabase
@@ -17,15 +18,16 @@ class ScriptsRepository:
 
     async def get(self, script_id: UUID) -> dict | None:
         client = get_supabase()
-        result = (
+        query = (
             client.table(self.TABLE)
             .select("*")
             .eq("id", str(script_id))
             .maybe_single()
-            .execute()
         )
+        result = await asyncio.to_thread(query.execute)
         return result.data if result.data else None
 
     async def update(self, script_id: UUID, fields: dict) -> None:
         client = get_supabase()
-        client.table(self.TABLE).update(fields).eq("id", str(script_id)).execute()
+        query = client.table(self.TABLE).update(fields).eq("id", str(script_id))
+        await asyncio.to_thread(query.execute)

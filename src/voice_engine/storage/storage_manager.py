@@ -1,5 +1,6 @@
 """Manages file uploads/downloads to/from Supabase Storage."""
 
+import asyncio
 from pathlib import Path
 from uuid import UUID
 
@@ -41,13 +42,17 @@ class StorageManager:
         storage_path = f"{org_id}/projects/{project_id}/output/{filename}"
         with open(local_path, "rb") as f:
             data = f.read()
-        return self._upload_bytes(storage_path, data, "audio/wav")
+        return await asyncio.to_thread(
+            self._upload_bytes, storage_path, data, "audio/wav"
+        )
 
     async def create_signed_url(
         self, storage_path: str, expires_in_seconds: int = 3600
     ) -> str:
         client = get_supabase()
-        result = client.storage.from_(self.bucket).create_signed_url(
+        bucket = client.storage.from_(self.bucket)
+        result = await asyncio.to_thread(
+            bucket.create_signed_url,
             path=storage_path,
             expires_in=expires_in_seconds,
         )
@@ -63,5 +68,6 @@ class StorageManager:
 
     async def delete(self, storage_path: str) -> bool:
         client = get_supabase()
-        client.storage.from_(self.bucket).remove([storage_path])
+        bucket = client.storage.from_(self.bucket)
+        await asyncio.to_thread(bucket.remove, [storage_path])
         return True

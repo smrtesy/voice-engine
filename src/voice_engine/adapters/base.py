@@ -88,3 +88,6 @@ class TTSAdapter(ABC):
     @abstractmethod
     async def delete_voice(self, voice_id: str) -> bool:
         ...
+
+    async def close(self) -> None:  # noqa: B027 — optional hook, not abstract
+        """Release pooled resources (HTTP clients). Default: nothing to do."""

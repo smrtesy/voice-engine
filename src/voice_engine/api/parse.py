@@ -1,5 +1,7 @@
 """Parse endpoint — fetch a Google Doc and return its parsed structure."""
 
+import asyncio
+
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -31,7 +33,9 @@ async def parse_script_endpoint(request: ParseScriptRequest) -> ParseScriptRespo
 
     try:
         client = GoogleDocsClient(request.google_oauth_token)
-        text, selected_tab = client.fetch_document_text(
+        # googleapiclient is synchronous — run the fetch off the event loop.
+        text, selected_tab = await asyncio.to_thread(
+            client.fetch_document_text,
             request.google_doc_id,
             tab_id=request.google_doc_tab_id,
             tab_title=request.google_doc_tab_title,
@@ -85,7 +89,10 @@ async def list_tabs_endpoint(request: ParseScriptRequest) -> dict:
         )
     try:
         client = GoogleDocsClient(request.google_oauth_token)
-        tabs = client.list_document_tabs(request.google_doc_id)
+        # googleapiclient is synchronous — run the fetch off the event loop.
+        tabs = await asyncio.to_thread(
+            client.list_document_tabs, request.google_doc_id
+        )
     except Exception as e:
         logger.error("google_docs_tabs_failed", error=str(e))
         raise HTTPException(

@@ -79,6 +79,15 @@ class JobOrchestrator:
         self.preprocessor = LLMPreprocessor()
         self.splitter = AudioSplitter()
         self.webhook = WebhookSender()
+        # One shared download client per job (created lazily, reused across
+        # every rendered clip, closed when the generation pipeline finishes)
+        # instead of a fresh httpx.AsyncClient per clip.
+        self._http_client: httpx.AsyncClient | None = None
+
+    def _get_http_client(self) -> httpx.AsyncClient:
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(timeout=300.0)
+        return self._http_client
 
     async def process_job(
         self, job_id: UUID, request: CreateJobRequest
@@ -193,7 +202,7 @@ class JobOrchestrator:
                             logger.info("job_cancel_requested", job_id=str(job_id))
                             cancel_event.set()
                             return
-                        await asyncio.sleep(3)
+                        await asyncio.sleep(10)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:  # noqa: BLE001 — polling is best-effort
@@ -354,7 +363,9 @@ class JobOrchestrator:
                 "google_oauth_token is required (caller must pass user OAuth token)"
             )
         client = GoogleDocsClient(request.google_oauth_token)
-        text, _selected_tab = client.fetch_document_text(
+        # googleapiclient is synchronous — run the fetch off the event loop.
+        text, _selected_tab = await asyncio.to_thread(
+            client.fetch_document_text,
             request.google_doc_id,
             tab_id=request.google_doc_tab_id,
             tab_title=request.google_doc_tab_title,
@@ -530,7 +541,10 @@ class JobOrchestrator:
         progress_cb=None,
         cancel_event: "asyncio.Event | None" = None,
     ) -> list[dict]:
-        adapter = get_adapter(request.adapter)
+        # Private (non-shared) adapter: this job owns it and closes it below —
+        # each job runs in its own event loop, so its HTTP client must not
+        # outlive the job. Within the job the client is reused for every line.
+        adapter = get_adapter(request.adapter, shared=False)
         semaphore = asyncio.Semaphore(self.settings.max_concurrent_lines)
 
         total = len(processed_lines)
@@ -595,7 +609,13 @@ class JobOrchestrator:
                     await _record_and_report(result)
 
         tasks = [process_one(i, line) for i, line in enumerate(processed_lines)]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            # Close the per-job HTTP clients (adapter + clip downloads) cleanly.
+            await adapter.close()
+            if self._http_client is not None and not self._http_client.is_closed:
+                await self._http_client.aclose()
 
         clean: list[dict] = []
         for result in results:
@@ -646,7 +666,10 @@ class JobOrchestrator:
                 f"line_{line.line_number:03d}.wav"
             )
             with open(audio_segment, "rb") as f:
-                self.storage._upload_bytes(input_path, f.read(), "audio/wav")
+                data = f.read()
+            await asyncio.to_thread(
+                self.storage._upload_bytes, input_path, data, "audio/wav"
+            )
             input_audio_url = await self.storage.create_signed_url(input_path)
 
         multi = len(voices) > 1
@@ -855,10 +878,10 @@ class JobOrchestrator:
         # Download from Resemble and upload to our storage so signed URLs come from us.
         with TemporaryDirectory() as tmp:
             local_path = Path(tmp) / f"out_{line.line_number:03d}.wav"
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                response = await client.get(result.audio_url)
-                response.raise_for_status()
-                local_path.write_bytes(response.content)
+            client = self._get_http_client()
+            response = await client.get(result.audio_url)
+            response.raise_for_status()
+            local_path.write_bytes(response.content)
 
             # Optional post-production: gentle compressor + WSOLA time-stretch
             # + loudness normalization (even level across lines).

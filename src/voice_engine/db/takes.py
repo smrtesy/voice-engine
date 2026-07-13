@@ -6,6 +6,7 @@ whose callback never lands still finished — the worker wrote its line/audio
 rows directly). Take history must be just as reliable, so the worker owns it.
 """
 
+import asyncio
 from uuid import UUID
 
 import structlog
@@ -22,13 +23,13 @@ class LineTakesRepository:
         """How many takes a line already has (0 if none / on error)."""
         try:
             client = get_supabase()
-            result = (
+            query = (
                 client.table(self.TABLE)
                 .select("id")
                 .eq("line_id", str(line_id))
                 .limit(1)
-                .execute()
             )
+            result = await asyncio.to_thread(query.execute)
             return len(result.data or [])
         except Exception as e:  # noqa: BLE001 — history is best-effort
             logger.warning("take_count_failed", line_id=str(line_id), error=str(e))
@@ -78,6 +79,7 @@ class LineTakesRepository:
                 row["voice_label"] = voice_label
             if text_spoken is not None:
                 row["text_spoken"] = text_spoken
-            client.table(self.TABLE).insert(row).execute()
+            query = client.table(self.TABLE).insert(row)
+            await asyncio.to_thread(query.execute)
         except Exception as e:  # noqa: BLE001 — history is best-effort
             logger.warning("take_record_failed", line_id=str(line_id), error=str(e))
