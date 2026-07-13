@@ -81,3 +81,33 @@ def test_bullet_checklist_items_are_not_numbered() -> None:
 def test_plain_paragraphs_still_extracted_without_lists_map() -> None:
     content = [_para([_run("hello world")])]
     assert _client()._extract_text(content, {}) == "hello world"
+
+
+def _tab(title: str, tab_id: str = "") -> dict:
+    return {"tabProperties": {"title": title, "tabId": tab_id or title}}
+
+
+def test_auto_selects_narration_tab_over_points() -> None:
+    # An all-English doc with two tabs: the script lives in "Narration".
+    tabs = [_tab("Points"), _tab("Narration")]
+    chosen = _client()._select_tab(tabs, tab_id=None, tab_title=None)
+    assert _client()._tab_title(chosen) == "Narration"
+
+
+def test_narration_wins_even_over_hebrew_tab() -> None:
+    tabs = [_tab("עברית"), _tab("Narration")]
+    chosen = _client()._select_tab(tabs, tab_id=None, tab_title=None)
+    assert _client()._tab_title(chosen) == "Narration"
+
+
+def test_falls_back_to_hebrew_then_first_tab() -> None:
+    hebrew = _client()._select_tab([_tab("Points"), _tab("עברית")], None, None)
+    assert _client()._tab_title(hebrew) == "עברית"
+    first = _client()._select_tab([_tab("Points"), _tab("Other")], None, None)
+    assert _client()._tab_title(first) == "Points"
+
+
+def test_explicit_tab_id_still_wins() -> None:
+    tabs = [_tab("Points", "p1"), _tab("Narration", "n1")]
+    chosen = _client()._select_tab(tabs, tab_id="p1", tab_title=None)
+    assert _client()._tab_id(chosen) == "p1"

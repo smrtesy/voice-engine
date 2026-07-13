@@ -79,7 +79,16 @@ class GoogleDocsClient:
         tab_id: str | None,
         tab_title: str | None,
     ) -> dict | None:
-        """Pick a tab by id, then exact title, then the Hebrew-titled one."""
+        """Pick a tab by id, then exact title, then by content heuristics.
+
+        Auto-selection order:
+          1. the "Narration" tab — that's the tab that holds the script to be
+             recorded (the studio template uses a "Points" tab and a
+             "Narration" tab; both may be English), so it wins even over the
+             Hebrew heuristic;
+          2. a Hebrew-titled tab (legacy Hebrew documents);
+          3. the first tab.
+        """
         if not tabs:
             return None
         if tab_id:
@@ -91,7 +100,11 @@ class GoogleDocsClient:
             for t in tabs:
                 if self._tab_title(t).strip() == wanted:
                     return t
-        # Auto: first tab whose title contains Hebrew letters.
+        # Auto: prefer the tab that holds the script — its title says so.
+        for t in tabs:
+            if "narration" in self._tab_title(t).strip().lower():
+                return t
+        # Then a Hebrew-titled tab (older Hebrew-only documents).
         for t in tabs:
             if HEBREW_CHAR.search(self._tab_title(t)):
                 return t
