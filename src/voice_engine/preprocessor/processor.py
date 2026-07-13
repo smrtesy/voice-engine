@@ -108,6 +108,10 @@ class LLMPreprocessor:
             # Per-character persona steers WHICH emotion the model picks so
             # different characters don't all read with the same melody.
             character_persona=character.personality_prompt or "",
+            # The SCRIPT's language drives whether the model keeps the line in
+            # Hebrew (with the niqqud rule) or English — an English script must
+            # not come back Hebrew.
+            script_language=pron_language,
         )
         user_message = build_user_message(line.text_clean, line.directions)
 

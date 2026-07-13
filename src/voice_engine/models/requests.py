@@ -93,6 +93,10 @@ class ParseScriptRequest(BaseModel):
     google_oauth_token: str | None = None
     google_doc_tab_id: str | None = None
     google_doc_tab_title: str | None = None
+    # The script's language ('he'/'en'). When no tab is chosen explicitly, it
+    # drives auto-selection: 'en' → the "Narration" tab, 'he' → a Hebrew-titled
+    # tab. None → Hebrew-first (legacy).
+    language: str | None = None
 
 
 class VoiceSampleRequest(BaseModel):

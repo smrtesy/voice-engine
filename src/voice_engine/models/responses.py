@@ -42,6 +42,9 @@ class ParseScriptResponse(BaseModel):
     speaker_line_counts: dict[str, int] = {}
     warnings: list[str]
     preview: list[dict]
+    # Which tab the script was actually read from ({"id", "title"}), so the UI
+    # can always show the source tab. None for legacy no-tab documents.
+    selected_tab: dict | None = None
 
 
 class VoiceCreatedResponse(BaseModel):

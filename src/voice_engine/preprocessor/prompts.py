@@ -1,10 +1,10 @@
 """System prompts for the LLM preprocessor (resemble-ultra recipe)."""
 
-SYSTEM_PROMPT_TEMPLATE = """You are a professional script preprocessor for a Hebrew children's TV studio.
+SYSTEM_PROMPT_TEMPLATE = """You are a professional script preprocessor for a children's TV studio.
 The synthesis engine is Resemble **resemble-ultra**.
 
-You receive one raw Hebrew script line (with possible stage directions) and
-prepare it for synthesis.
+You receive one raw {language_name} script line (with possible stage
+directions) and prepare it for synthesis.
 
 ## Context
 Character speaking in this line: {character_name}
@@ -21,13 +21,12 @@ reading. This shapes delivery — it does not change the words.
 {context_lines}
 
 ## Hard rules for resemble-ultra
-1. Output the spoken text as PLAIN Hebrew with NO niqqud (vowel points).
-   resemble-ultra adds vocalization internally; niqqud HARMS the result.
-   Strip any niqqud that appears in the input.
+1. {output_language_rule}
 2. Remove stage directions from the spoken text (they are not spoken), but
    keep normal punctuation.
-3. Do NOT translate or paraphrase. Keep the Hebrew wording exactly, only
-   cleaned. If the line references a URL, keep the URL verbatim.
+3. Do NOT translate or paraphrase. Keep the wording exactly in its original
+   language ({language_name}) — never translate it to another language, only
+   clean it. If the line references a URL, keep the URL verbatim.
 
 ## Pronunciation glossary — apply VERBATIM, context-aware
 Some words are respelled so Ultra reads them correctly. Each rule is
@@ -68,12 +67,31 @@ Choose "emotion" from EXACTLY this list (English label):
 ## Output format
 Return ONLY valid JSON, no text around it:
 {{
-  "text_for_tts": "<cleaned plain Hebrew, no niqqud, no stage directions, glossary applied>",
+  "text_for_tts": "<cleaned spoken text in {language_name}, no stage directions, glossary applied>",
   "emotion": "<one label from the list above>",
   "emotion_source": "script" | "llm" | "none",
   "resemble_prompt": "<short English delivery note, for logging only>"
 }}
 """
+
+
+# Rule 1 (spoken-text vocalization) is language-specific: niqqud only makes
+# sense for Hebrew, and telling the model "output Hebrew" on an English script
+# made English lines come back Hebrew.
+_HEBREW_OUTPUT_RULE = (
+    "Output the spoken text as PLAIN Hebrew with NO niqqud (vowel points). "
+    "resemble-ultra adds vocalization internally; niqqud HARMS the result. "
+    "Strip any niqqud that appears in the input."
+)
+_ENGLISH_OUTPUT_RULE = (
+    "Output the spoken text as plain English. Keep it in English — do NOT "
+    "translate it to Hebrew or add Hebrew niqqud/vowel points. Transliterated "
+    "Hebrew/Yiddish words already written in Latin letters stay as they are."
+)
+
+
+def _language_name(script_language: str | None) -> str:
+    return "English" if (script_language or "").lower().startswith("en") else "Hebrew"
 
 
 def build_system_prompt(
@@ -84,6 +102,7 @@ def build_system_prompt(
     emotion_dictionary: dict[str, dict],
     pronunciation_glossary: str = "",
     character_persona: str = "",
+    script_language: str | None = None,
 ) -> str:
     context_str = "\n".join(context_lines) if context_lines else "(start of scene)"
     names_str = "\n".join(f"  - {k} -> {v}" for k, v in name_dictionary.items())
@@ -92,6 +111,7 @@ def build_system_prompt(
     )
     glossary_str = pronunciation_glossary.strip() or "  (no org-specific pronunciation rules)"
     persona_str = character_persona.strip() or "  (no specific persona — read naturally)"
+    is_english = _language_name(script_language) == "English"
     return SYSTEM_PROMPT_TEMPLATE.format(
         character_name=character_name,
         character_description=character_description,
@@ -100,6 +120,8 @@ def build_system_prompt(
         name_dictionary=names_str,
         emotion_dictionary=emotions_str,
         pronunciation_glossary=glossary_str,
+        language_name=_language_name(script_language),
+        output_language_rule=_ENGLISH_OUTPUT_RULE if is_english else _HEBREW_OUTPUT_RULE,
     )
 
 

@@ -32,18 +32,71 @@ logger = structlog.get_logger()
 
 
 # Real format
-SCENE_PATTERN: Pattern = re.compile(r"^\s*סצנה\b\s*(.*)$")
+# Scene headers: Hebrew "סצנה ..." and English "Scene ..." (often bold, e.g.
+# "**Scene 1**") — leading emphasis stars are tolerated.
+SCENE_PATTERN: Pattern = re.compile(r"^\**\s*(?:סצנה|scene)\b.*$", re.IGNORECASE)
 NUMBERED_LINE_PATTERN: Pattern = re.compile(r"^\s*(\d+)\s*[.).]\s*([^:：]+)\s*[:：]\s*(.+)$")
 # Legacy markup
 SCENE_TITLE_PATTERN: Pattern = re.compile(r"^---\[\s*(.+?)\s*\]---$")
-SPEAKER_LINE_PATTERN: Pattern = re.compile(r"^\*\*(.+?)\*\*\s*:\s*(.+)$")
 COMBINED_SPEAKERS_PATTERN: Pattern = re.compile(r"\*\*(.+?)\s+ו(.+?)\*\*:")
+# Emphasised speaker label. Real Google-Docs scripts are inconsistent about
+# where the colon sits relative to the bold markers, and often add a
+# parenthetical qualifier ("(off-screen)") after the name:
+#   **Sammy**: text            (colon OUTSIDE the emphasis)
+#   **Mommy Meshinsky** (off-screen): text
+#   **Yudi:** text             (colon INSIDE the emphasis)
+#   **Yitzchok:** *(smiling)* … (direction right after the label)
+# The old parser only matched the colon-outside form, so every colon-inside
+# line was mis-read as a continuation of the previous line and its speaker
+# was dropped from casting. Both forms are captured here.
+SPEAKER_LINE_PATTERN: Pattern = re.compile(
+    r"^\*+\s*([^*:：\n]+?)\s*\*+\s*(?:\([^)]*\)\s*)?[:：]\s*(.+)$"
+)
+SPEAKER_LINE_COLON_IN_PATTERN: Pattern = re.compile(
+    r"^\*+\s*([^*:：\n]+?)\s*(?:\([^)]*\)\s*)?[:：]\s*\*+\s*(.+)$"
+)
 
 PAREN_PATTERN: Pattern = re.compile(r"\(([^)]*)\)")
+# Bold-italic (***…***) stage directions are pulled first, then plain italics.
+BOLD_ITALIC_PATTERN: Pattern = re.compile(r"\*{3}([^*]+)\*{3}")
 ITALIC_PATTERN: Pattern = re.compile(r"\*([^*]+)\*")
+QUALIFIER_PATTERN: Pattern = re.compile(r"\s*\([^)]*\)")
 
 # Leading emotion keywords, longest-first so "מגמגם מתוך לחץ" beats "מגמגם".
 _EMOTION_KEYWORDS = sorted(EMOTION_DIRECTIONS.keys(), key=len, reverse=True)
+
+# Bold "label: value" rows in the studio template look exactly like a
+# colon-inside speaker line (**Length:** 2000). They are metadata, not
+# dialogue, so an un-numbered colon-inside match with one of these names is
+# ignored — it must never turn into a castable character. (Numbered dialogue
+# is never filtered: a real line always carries its list number.)
+NON_SPEAKER_LABELS: frozenset[str] = frozenset(
+    {
+        "length",
+        "title",
+        "description",
+        "question",
+        "theme",
+        "checklist",
+        "characters",
+        "date of sicha",
+        "mission of the week",
+        "id",
+        "id#",
+        "note",
+        "notes",
+        "segment",
+        "narration",
+        "points",
+        "main writer",
+        "dp",
+        "rg",
+        "rlr",
+        "my",
+        "done",
+        "pending",
+    }
+)
 
 
 class ScriptParser:
@@ -70,8 +123,8 @@ class ScriptParser:
             if scene_match := SCENE_TITLE_PATTERN.match(stripped):
                 self.current_scene = scene_match.group(1).strip()
                 continue
-            if scene_match := SCENE_PATTERN.match(stripped):
-                self.current_scene = stripped
+            if SCENE_PATTERN.match(stripped):
+                self.current_scene = stripped.replace("*", "").strip()
                 continue
 
             # Production notes in square brackets — not spoken.
@@ -98,17 +151,40 @@ class ScriptParser:
 
     @staticmethod
     def _clean_speaker(speaker: str) -> str:
-        return speaker.replace("*", "").strip()
+        # Drop emphasis markers and any trailing "(off-screen)"-style qualifier
+        # so the same character is one casting entry regardless of how a given
+        # line annotated them.
+        cleaned = speaker.replace("*", "")
+        cleaned = QUALIFIER_PATTERN.sub("", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _is_castable_speaker(speaker: str) -> bool:
+        """Guard the un-numbered colon-inside form against template metadata."""
+        norm = re.sub(r"\s+", " ", speaker).strip().lower().rstrip(":")
+        if not norm or norm in NON_SPEAKER_LABELS:
+            return False
+        # A speaker name is short; a sentence that happens to contain a colon
+        # is not a speaker.
+        return len(norm.split()) <= 4
 
     def _try_parse_legacy(self, raw_line: str) -> bool:
         if combined_match := COMBINED_SPEAKERS_PATTERN.match(raw_line):
             self._handle_combined_speakers(raw_line, combined_match)
             return True
-        if speaker_match := SPEAKER_LINE_PATTERN.match(raw_line):
-            speaker = speaker_match.group(1).strip()
-            text = speaker_match.group(2).strip()
-            self._add_line(speaker, text)
-            return True
+        # Emphasised speaker label, colon either OUTSIDE (**Name**: text) or
+        # INSIDE (**Name:** text) the bold markers. Guarded so bold "label:"
+        # metadata rows (**Length:** 2000) never become castable characters.
+        for pattern in (SPEAKER_LINE_PATTERN, SPEAKER_LINE_COLON_IN_PATTERN):
+            if speaker_match := pattern.match(raw_line):
+                speaker = self._clean_speaker(speaker_match.group(1))
+                if self._is_castable_speaker(speaker):
+                    self._add_line(speaker, speaker_match.group(2).strip())
+                # A "<label>: value" row was recognised. Consume it either way:
+                # if the label isn't a castable speaker it's template metadata,
+                # which must be dropped — NOT appended to the previous dialogue
+                # line as a continuation.
+                return True
         return False
 
     def _handle_combined_speakers(self, raw_line: str, match: re.Match) -> None:
@@ -132,12 +208,17 @@ class ScriptParser:
         """Pull stage directions out of `text`; return (clean_text, directions)."""
         directions: list[str] = []
 
-        # Parentheticals and italics anywhere in the line.
+        # Bold-italic (***…***) narration first, then parentheticals and plain
+        # italics anywhere in the line.
+        directions.extend(d.strip() for d in BOLD_ITALIC_PATTERN.findall(text))
+        text = BOLD_ITALIC_PATTERN.sub("", text)
         directions.extend(d.strip() for d in PAREN_PATTERN.findall(text))
         directions.extend(d.strip() for d in ITALIC_PATTERN.findall(text))
         text = PAREN_PATTERN.sub("", text)
         text = ITALIC_PATTERN.sub("", text)
-        text = text.strip()
+        # Drop any leftover emphasis markers (e.g. the stray "**" left when a
+        # colon sat inside the bold: "**Yudi:** text" → text was "** text").
+        text = text.replace("*", "").strip()
 
         # A leading known emotion keyword (no parentheses), e.g. "בהתרגשות יש!".
         for kw in _EMOTION_KEYWORDS:
