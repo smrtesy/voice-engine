@@ -76,7 +76,13 @@ class Settings(BaseSettings):
     max_retries: int = 3
     retry_backoff_base: int = 2
     job_timeout_seconds: int = 3600
-    max_concurrent_lines: int = 5
+    # How many Resemble clips render at once. Each line holds a synchronous
+    # Resemble connection open for the full render (~10-30s), so this cap — not
+    # Resemble — was the bottleneck: we were self-throttling at 5 while a
+    # standard Resemble token allows ~40 requests/second. 12 roughly doubles
+    # generation throughput with headroom under that ceiling and the adapter's
+    # 429 retry. Tunable via env; drop it if a tighter (e.g. Flex) plan 429s.
+    max_concurrent_lines: int = 12
     # LLM preprocessing (emotion/niqqud/prompt) runs one Anthropic call per cast
     # line. It used to run strictly serially, so an 85-line script spent minutes
     # in "preprocessing" before the first audio byte. Run these calls with
