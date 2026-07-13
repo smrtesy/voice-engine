@@ -147,6 +147,21 @@ def test_bold_metadata_row_is_not_a_speaker() -> None:
     assert all(ln.speaker_name != "Length" for ln in lines)
 
 
+def test_metadata_row_between_lines_does_not_pollute_previous() -> None:
+    # A recognised "label:" metadata row sitting between two dialogue lines must
+    # be dropped, not appended to the previous line's spoken text.
+    text = (
+        "1. **Sammy**: I have an idea!\n"
+        "**Length:** Office: 2000\n"
+        "2. **Yudi:** Really?"
+    )
+    lines, _ = parse_script(text)
+
+    assert [ln.speaker_name for ln in lines] == ["Sammy", "Yudi"]
+    assert lines[0].text_clean == "I have an idea!"
+    assert "2000" not in lines[0].text_clean
+
+
 def test_english_scene_header_detected() -> None:
     text = "**Scene 1**\n1. **Sammy**: Look at this!"
     lines, _ = parse_script(text)
