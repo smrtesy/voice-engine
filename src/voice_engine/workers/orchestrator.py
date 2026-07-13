@@ -354,11 +354,13 @@ class JobOrchestrator:
                 "google_oauth_token is required (caller must pass user OAuth token)"
             )
         client = GoogleDocsClient(request.google_oauth_token)
-        return client.fetch_document_text(
+        text, _selected_tab = client.fetch_document_text(
             request.google_doc_id,
             tab_id=request.google_doc_tab_id,
             tab_title=request.google_doc_tab_title,
+            language=request.language,
         )
+        return text
 
     async def _resolve_pronunciations(
         self, request: CreateJobRequest

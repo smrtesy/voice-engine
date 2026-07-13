@@ -180,7 +180,11 @@ class ScriptParser:
                 speaker = self._clean_speaker(speaker_match.group(1))
                 if self._is_castable_speaker(speaker):
                     self._add_line(speaker, speaker_match.group(2).strip())
-                    return True
+                # A "<label>: value" row was recognised. Consume it either way:
+                # if the label isn't a castable speaker it's template metadata,
+                # which must be dropped — NOT appended to the previous dialogue
+                # line as a continuation.
+                return True
         return False
 
     def _handle_combined_speakers(self, raw_line: str, match: re.Match) -> None:
