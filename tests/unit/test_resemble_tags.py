@@ -4,6 +4,7 @@ from voice_engine.dictionaries.resemble_tags import (
     baseline_tags,
     compose_body,
     merge_style,
+    strip_tags,
     tags_for_emotion,
 )
 
@@ -136,3 +137,37 @@ def test_baseline_drops_self_conflicting_names():
     # first (first-wins), so we never emit <higher-pitch><lower-pitch>.
     out = baseline_tags(["higher-pitch", "lower-pitch", "slow"])
     assert [t["tag"] for t in out] == ["higher-pitch", "slow"]
+
+
+# ── strip_tags — the BR1 line-1 nested-tags regression ─────────────────────
+
+
+def test_strip_tags_removes_wrap_and_inline_markup():
+    poisoned = "<build-intensity><higher-pitch>שלום</higher-pitch></build-intensity>"
+    assert strip_tags(poisoned) == "שלום"
+    assert strip_tags("[sigh] <soft>שקט</soft> רגיל") == "שקט רגיל"
+    assert strip_tags(None) == ""
+    assert strip_tags("נקי לגמרי") == "נקי לגמרי"
+
+
+def test_strip_tags_leaves_unknown_brackets_alone():
+    # Only KNOWN tags are markup; user text with brackets must survive.
+    assert strip_tags("טקסט עם <סוגריים> ו-[הערה] חופשיים") == "טקסט עם <סוגריים> ו-[הערה] חופשיים"
+
+
+def test_strip_then_compose_never_nests():
+    # The regression: text_for_tts poisoned with baked tags, then a plain redo
+    # re-wraps the emotion recipe. Stripping first must yield exactly ONE level.
+    poisoned = "<build-intensity><higher-pitch>היי, גלידה!</higher-pitch></build-intensity>"
+    tags = tags_for_emotion("excited", "llm")
+    body = compose_body(strip_tags(poisoned), tags)
+    assert body == "<build-intensity><higher-pitch>היי, גלידה!</higher-pitch></build-intensity>"
+    assert body.count("<build-intensity>") == 1
+
+
+def test_strip_tags_never_joins_words():
+    # A tag abutting text must leave a separator, not glue the words together.
+    assert strip_tags("שלום[pause]עולם") == "שלום עולם"
+    assert strip_tags("היי<emphasis>גלידה</emphasis>סבא") == "היי גלידה סבא"
+    # Case-insensitive: user-recased markup is still markup.
+    assert strip_tags("<Soft>שקט</Soft>") == "שקט"

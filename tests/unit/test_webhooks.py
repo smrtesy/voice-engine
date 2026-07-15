@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import httpx
-import pytest
 
 from voice_engine.platform import webhooks as webhooks_mod
 from voice_engine.platform.webhooks import WebhookSender

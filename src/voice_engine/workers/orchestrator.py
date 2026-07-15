@@ -43,6 +43,7 @@ from voice_engine.dictionaries.resemble_tags import (
     baseline_tags,
     compose_body,
     merge_style,
+    strip_tags,
     tags_for_emotion,
 )
 from voice_engine.models.domain import (
@@ -736,7 +737,10 @@ class JobOrchestrator:
                     "cost_usd": (prev or {}).get("generation_cost_usd"),
                     "text_used": (prev or {}).get("tts_body")
                     or (prev or {}).get("text_for_tts"),
-                    "text_spoken": (prev or {}).get("text_for_tts"),
+                    # text_spoken must be tag-free (smrtesy diffs it against the
+                    # original to learn respellings); a row poisoned before the
+                    # strip-on-write fix may still carry markup here.
+                    "text_spoken": strip_tags((prev or {}).get("text_for_tts")),
                     "model": prev_req.get("model") if isinstance(prev_req, dict) else None,
                 }
 
@@ -961,7 +965,13 @@ class JobOrchestrator:
         """
         emotion = row.get("emotion") or "neutral"
         emotion_source = row.get("emotion_source") or "none"
-        text_for_tts = row.get("text_for_tts") or row.get("text_clean", "")
+        # Defensively strip tag markup from the stored text before re-wrapping:
+        # a line-edit redo used to persist the edited body (tags included) into
+        # text_for_tts, and compose_body around that produced NESTED tags —
+        # which resemble-ultra reacts to by restarting the line over and over
+        # (the BR1 line-1 repeated-speech bug). Stripping here also self-heals
+        # any row poisoned before the write-side fix in _process_regenerate.
+        text_for_tts = strip_tags(row.get("text_for_tts")) or row.get("text_clean", "")
         tags = tags_for_emotion(emotion, emotion_source)
         return ProcessedLine(
             line_number=row["line_number"],
@@ -1031,7 +1041,9 @@ class JobOrchestrator:
                 # model's input; otherwise the stored cleaned text is. Needs a
                 # cast voice — without one the line is skipped downstream anyway.
                 if line.line_number in reprocess and character:
-                    src = override_text or line.text_clean or line.text_for_tts or ""
+                    # The edit box is prefilled from tts_body, so an edited text
+                    # may carry tag markup — the LLM must see clean speech text.
+                    src = strip_tags(override_text) or line.text_clean or line.text_for_tts or ""
                     src_line = ScriptLine(
                         line_number=line.line_number,
                         scene_title=line.scene_title,
@@ -1056,7 +1068,15 @@ class JobOrchestrator:
                     # them) and do NOT re-apply pronunciation. Emotion tags are
                     # now considered baked into the edited body, and the edited
                     # text supersedes any earlier pointed (niqqud) version.
-                    line.text_for_tts = override_text
+                    #
+                    # BUT text_for_tts (the persisted "clean spoken text" column)
+                    # must NOT keep that markup: mark_completed writes it back to
+                    # the row, and the next plain redo re-wraps fresh emotion
+                    # tags around whatever is stored there — nested tags that
+                    # make resemble-ultra restart the line repeatedly (the BR1
+                    # line-1 bug). Speak the edited body verbatim; persist it
+                    # stripped.
+                    line.text_for_tts = strip_tags(override_text)
                     line.tts_body = override_text
                     line.tags = []
                     line.is_pointed = False
