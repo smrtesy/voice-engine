@@ -86,6 +86,19 @@ def test_deleted_content_word_rejected() -> None:
     assert accept_llm_text("שלום גדול", src, []) == (src, False)
 
 
+def test_scattered_direction_token_not_removable() -> None:
+    # The direction phrase "פונה אל הקהל" must NOT make the lone preposition
+    # "אל" independently droppable from real dialogue.
+    src = "אמרתי אל הבית"
+    assert accept_llm_text("אמרתי הבית", src, ["פונה אל הקהל"]) == (src, False)
+
+
+def test_partial_phrase_deletion_rejected() -> None:
+    # dropping only part of a multi-word keyword run is not allowed
+    src = "מגמגם מתוך לחץ שלום"
+    assert accept_llm_text("מתוך לחץ שלום", src, [])[1] is False
+
+
 def test_empty_llm_text_falls_back() -> None:
     assert accept_llm_text("", "שלום", []) == ("שלום", False)
     assert accept_llm_text(None, "שלום", []) == ("שלום", False)
