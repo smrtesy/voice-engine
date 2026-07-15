@@ -47,7 +47,15 @@ class Settings(BaseSettings):
     # claude-sonnet-4-20250514 was retired; the account now serves the 4.x line
     # (same models the mrtesy app uses). A stale default here 404s every line
     # and kills the whole job, so keep this current.
-    llm_model: str = "claude-sonnet-4-6"
+    #
+    # Default is Haiku 4.5: a per-line comparison over an 85-line script (BR1)
+    # found Haiku's preprocessing settings essentially indistinguishable from
+    # Sonnet's — 96% emotion-label agreement and 100% emotion_source agreement
+    # vs the stored Sonnet output, which is *within* Sonnet's own run-to-run
+    # variance at temperature 0.3 — at ~3.75x lower cost. Use the dated id the
+    # rest of the platform serves (mrtesy-app server/src/anthropic.ts) so it
+    # never 404s. Override per-org via CreateJobRequest.llm_model.
+    llm_model: str = "claude-haiku-4-5-20251001"
     llm_max_tokens: int = 2000
     llm_temperature: float = 0.3
 
