@@ -17,6 +17,7 @@ from voice_engine.dictionaries.resemble_tags import (
 )
 from voice_engine.lib.hebrew_utils import strip_niqqud
 from voice_engine.models.domain import Character, ProcessedLine, ScriptLine
+from voice_engine.preprocessor.fidelity import accept_llm_text
 from voice_engine.preprocessor.llm_client import get_anthropic_client
 from voice_engine.preprocessor.prompts import build_system_prompt, build_user_message
 from voice_engine.storage.supabase_client import get_supabase
@@ -163,8 +164,21 @@ class LLMPreprocessor:
                 )
                 llm_output = _fallback_output
 
+        # Text-fidelity guard: accept the model's cleaned text only if it kept
+        # every word's letter-content intact (see preprocessor.fidelity). On any
+        # content change — a mistyped word, an inserted/dropped non-keyword — fall
+        # back to the source line, so a silent corruption (e.g. הגענו→הגננו) can
+        # never reach audio. The niqqud + glossary passes below still run on it.
+        chosen_text, llm_text_ok = accept_llm_text(
+            llm_output.get("text_for_tts"),
+            line.text_clean,
+            line.directions,
+            pronunciations,
+            pron_language,
+        )
+
         # Plain Hebrew, no niqqud — Ultra vocalizes internally (niqqud harms it).
-        text_for_tts = strip_niqqud(llm_output.get("text_for_tts") or line.text_clean).strip()
+        text_for_tts = strip_niqqud(chosen_text or line.text_clean).strip()
 
         # Deterministic pronunciation safety net: the LLM was asked to apply the
         # glossary context-aware, but this verbatim longest-first pass catches any
@@ -203,6 +217,7 @@ class LLMPreprocessor:
             line_number=line.line_number,
             emotion=emotion,
             emotion_source=emotion_source,
+            text_fidelity_ok=llm_text_ok,
             tags=[t["tag"] for t in tags],
             tokens_used=(
                 response.usage.input_tokens + response.usage.output_tokens

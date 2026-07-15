@@ -11,7 +11,6 @@ import asyncio
 from uuid import uuid4
 
 import pytest
-
 from voice_engine.models.domain import Character, ProcessedLine, ScriptLine
 from voice_engine.preprocessor.processor import LLMPreprocessor
 
