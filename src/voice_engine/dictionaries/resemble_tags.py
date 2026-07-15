@@ -26,6 +26,8 @@ niqqud on the text, `prompt`/`exaggeration` presets.
 
 from __future__ import annotations
 
+import re
+
 INLINE_TAGS: set[str] = {
     "pause",
     "long-pause",
@@ -200,3 +202,27 @@ def compose_body(text: str, tags: list[dict] | None) -> str:
 
     prefix = " ".join(f"[{t['tag']}]" for t in inline)
     return f"{prefix} {body}".strip() if prefix else body
+
+
+# Matches any KNOWN tag markup: <tag>/</tag> for wrap tags, [tag] for inline.
+_WRAP_ALT = "|".join(sorted(WRAP_TAGS, key=len, reverse=True))
+_INLINE_ALT = "|".join(sorted(INLINE_TAGS, key=len, reverse=True))
+_TAG_MARKUP_RE = re.compile(rf"</?(?:{_WRAP_ALT})>|\[(?:{_INLINE_ALT})\]", re.IGNORECASE)
+
+
+def strip_tags(text: str | None) -> str:
+    """Remove all KNOWN emotion-tag markup from `text`, returning clean speech text.
+
+    Strips `<tag>`/`</tag>` for every WRAP_TAGS entry and `[tag]` for every
+    INLINE_TAGS entry — and nothing else, so user-authored text that happens to
+    contain brackets is untouched. Needed because the line-edit redo path
+    receives text prefilled from `tts_body` (tags included): the edited body is
+    still spoken verbatim, but the `text_for_tts` column must stay tag-free —
+    otherwise the next plain redo re-wraps fresh emotion tags around it and the
+    nested stack destabilizes resemble-ultra (line restarts / repeated speech —
+    the BR1 line-1 bug).
+    """
+    if not text:
+        return ""
+    cleaned = _TAG_MARKUP_RE.sub(" ", text)
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
