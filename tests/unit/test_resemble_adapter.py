@@ -1,9 +1,13 @@
 """Unit tests for ResembleAdapter — uses mocked httpx responses, no real API calls."""
 
+import base64
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+
+from voice_engine.adapters import resemble as resemble_mod
 from voice_engine.adapters.base import GenerateRequest
 from voice_engine.adapters.resemble import ResembleAdapter
 from voice_engine.lib.errors import (
@@ -93,8 +97,10 @@ async def test_generate_tts_omits_input_audio():
         )
     )
 
+    # resemble-ultra uses the v2 clips path (body field); chatterbox would route
+    # to /synthesize (covered separately below).
     result = await adapter.generate_tts(
-        GenerateRequest(text="שלום שרהלה", voice_id="voice-uuid", model="chatterbox")
+        GenerateRequest(text="שלום שרהלה", voice_id="voice-uuid", model="resemble-ultra")
     )
 
     payload = adapter.client.post.call_args[1]["json"]
@@ -255,3 +261,143 @@ async def test_create_voice_clone_requires_dataset_url():
     adapter = ResembleAdapter()
     with pytest.raises(ResembleAPIError, match="dataset_url"):
         await adapter.create_voice_clone("", "Rivka")
+
+
+# ── Chatterbox /synthesize path ──────────────────────────────────────────────
+
+
+def _patch_synthesize(monkeypatch, json_data: dict, status_code: int = 200):
+    """Patch the ad-hoc httpx.AsyncClient used by _synthesize_tts. Returns a
+    dict capturing the request the adapter made."""
+    captured: dict = {}
+
+    response = MagicMock(spec=httpx.Response)
+    response.status_code = status_code
+    response.json.return_value = json_data
+    if status_code >= 400:
+        response.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError(
+                f"HTTP {status_code}", request=MagicMock(), response=response
+            )
+        )
+        response.text = "err"
+    else:
+        response.raise_for_status = MagicMock()
+
+    async def _post(url, json=None, headers=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        return response
+
+    @asynccontextmanager
+    async def _client(*args, **kwargs):
+        client = MagicMock()
+        client.post = _post
+        yield client
+
+    monkeypatch.setattr(resemble_mod.httpx, "AsyncClient", _client)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_chatterbox_routes_to_synthesize(monkeypatch):
+    audio = b"RIFF....fake-wav-bytes"
+    captured = _patch_synthesize(
+        monkeypatch,
+        {
+            "success": True,
+            "audio_content": base64.b64encode(audio).decode(),
+            "duration": 3.0,
+        },
+    )
+    adapter = ResembleAdapter()
+
+    result = await adapter.generate_tts(
+        GenerateRequest(
+            text="Hello world",
+            voice_id="voice-uuid",
+            model="chatterbox",
+        )
+    )
+
+    # Hit /synthesize, not the project clips API.
+    assert captured["url"] == adapter._synthesize_url
+    # Raw key auth (NOT "Token <key>").
+    assert captured["headers"]["Authorization"] == adapter.api_key
+    body = captured["json"]
+    assert body["data"] == "Hello world"
+    assert body["voice_uuid"] == "voice-uuid"
+    # /synthesize rejects a `model` field (401) — the voice picks the variant.
+    assert "model" not in body
+    # Audio returned inline as bytes; there is no URL to download.
+    assert result.audio_bytes == audio
+    assert result.audio_url is None
+    assert result.adapter_metadata["endpoint"] == "synthesize"
+    assert result.duration_seconds == 3.0
+
+
+@pytest.mark.asyncio
+async def test_chatterbox_strips_emotion_tags(monkeypatch):
+    audio = b"wav"
+    captured = _patch_synthesize(
+        monkeypatch,
+        {"success": True, "audio_content": base64.b64encode(audio).decode()},
+    )
+    adapter = ResembleAdapter()
+
+    # Chatterbox has no SSML: a tagged body must be stripped to clean speech.
+    await adapter.generate_tts(
+        GenerateRequest(
+            text="היי גלידה",
+            voice_id="v",
+            tts_body="<build-intensity>היי גלידה</build-intensity>",
+            model="chatterbox",
+        )
+    )
+
+    assert captured["json"]["data"] == "היי גלידה"
+    assert "<build-intensity>" not in captured["json"]["data"]
+
+
+@pytest.mark.asyncio
+async def test_synthesize_reports_in_body_failure(monkeypatch):
+    _patch_synthesize(monkeypatch, {"success": False, "message": "over the usage limit"})
+    adapter = ResembleAdapter()
+
+    with pytest.raises(ResembleAPIError, match="over the usage limit"):
+        await adapter.generate_tts(
+            GenerateRequest(text="x", voice_id="v", model="chatterbox-turbo")
+        )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_missing_audio_raises(monkeypatch):
+    _patch_synthesize(monkeypatch, {"success": True})
+    adapter = ResembleAdapter()
+
+    with pytest.raises(ResembleAPIError, match="audio_content"):
+        await adapter.generate_tts(
+            GenerateRequest(text="x", voice_id="v", model="chatterbox")
+        )
+
+
+@pytest.mark.asyncio
+async def test_non_chatterbox_stays_on_clips_path():
+    # resemble-ultra (and None) must NOT hit /synthesize — they use the v2 clips
+    # client, which we assert is the one that gets called.
+    adapter = ResembleAdapter()
+    adapter.client = MagicMock()
+    adapter.client.post = AsyncMock(
+        return_value=_mock_response(
+            {"item": {"uuid": "c", "audio_src": "u", "duration": 1.0}}
+        )
+    )
+
+    result = await adapter.generate_tts(
+        GenerateRequest(text="שלום", voice_id="v", model="resemble-ultra")
+    )
+
+    adapter.client.post.assert_called_once()
+    assert result.audio_url == "u"
+    assert result.audio_bytes is None

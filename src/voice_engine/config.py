@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # Resemble
     resemble_api_key: str
     resemble_api_base_url: str = "https://app.resemble.ai/api/v2"
+    # The Chatterbox family uses the synchronous /synthesize endpoint (returns
+    # audio inline as base64) instead of the project-scoped v2 clips API.
+    # Overridable via env for staging clusters; default is the prod cluster.
+    resemble_synthesize_url: str = "https://f.cluster.resemble.ai/synthesize"
     # Synthesis is project-scoped: POST /projects/{uuid}/clips. Set this to the
     # Resemble project that holds the cloned voices (e.g. "2b0383f7").
     resemble_project_uuid: str = ""
