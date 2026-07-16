@@ -47,9 +47,15 @@ class GenerateRequest:
 class GenerateResult:
     """Common result structure for all adapters."""
 
-    audio_url: str
-    duration_seconds: float
-    cost_usd: float
+    # audio_url: the project-scoped clips API (resemble-ultra/legacy) returns a
+    # URL to download. audio_bytes: the /synthesize API (Chatterbox) returns the
+    # audio inline as base64 — decoded to raw bytes here. Exactly one is set;
+    # the orchestrator uses audio_bytes directly when present, else downloads
+    # audio_url.
+    audio_url: str | None = None
+    duration_seconds: float = 0.0
+    cost_usd: float = 0.0
+    audio_bytes: bytes | None = None
     audio_path: Path | None = None
     adapter_metadata: dict = field(default_factory=dict)
 

@@ -1,5 +1,23 @@
-"""Resemble AI adapter."""
+"""Resemble AI adapter.
 
+Two synthesis endpoints, chosen per request by the model:
+
+* **resemble-ultra / legacy** → the project-scoped v2 clips API
+  (`POST {base}/projects/{uuid}/clips`, `Authorization: Token <key>`, text under
+  `body` WITH emotion tags, response carries an audio URL). resemble-ultra is a
+  premium model gated behind higher account tiers.
+* **Chatterbox family** → the current synchronous API
+  (`POST https://f.cluster.resemble.ai/synthesize`, `Authorization: <key>` raw,
+  text under `data`, response returns base64 `audio_content`). Chatterbox does
+  NOT support SSML/wrapping tags, so the emotion-tag markup is stripped before
+  sending. This is the path available on the Flex tier.
+
+The active model is a system setting (smrtvoice_settings.default_resemble_model,
+surfaced as a dropdown in the smrtVoice settings UI) that flows in per request,
+so switching ultra ⇄ chatterbox is a setting change, not a redeploy.
+"""
+
+import base64
 
 import httpx
 import structlog
@@ -7,6 +25,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from voice_engine.adapters.base import GenerateRequest, GenerateResult, TTSAdapter
 from voice_engine.config import get_settings
+from voice_engine.dictionaries.resemble_tags import strip_tags
 from voice_engine.lib.errors import (
     ResembleAPIError,
     ResembleAuthError,
@@ -14,6 +33,18 @@ from voice_engine.lib.errors import (
 )
 
 logger = structlog.get_logger()
+
+# Default endpoint for the current (Chatterbox) synchronous synthesis API.
+SYNTHESIZE_URL = "https://f.cluster.resemble.ai/synthesize"
+
+
+def _uses_synthesize(model: str | None) -> bool:
+    """Chatterbox-family models go to /synthesize; ultra/legacy to v2 clips.
+
+    None (no explicit model → engine env fallback, resemble-ultra) stays on the
+    clips path, so behavior is unchanged unless a Chatterbox model is selected.
+    """
+    return bool(model) and "chatterbox" in model.lower()
 
 
 class ResembleAdapter(TTSAdapter):
@@ -27,6 +58,9 @@ class ResembleAdapter(TTSAdapter):
         self.base_url = settings.resemble_api_base_url
         self._default_model = settings.resemble_default_model
         self._project_uuid = settings.resemble_project_uuid
+        self._synthesize_url = getattr(
+            settings, "resemble_synthesize_url", SYNTHESIZE_URL
+        )
 
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
@@ -133,6 +167,12 @@ class ResembleAdapter(TTSAdapter):
         reraise=True,
     )
     async def generate_tts(self, req: GenerateRequest) -> GenerateResult:
+        model = req.model or self._default_model
+        # Chatterbox family → the current /synthesize endpoint; everything else
+        # (resemble-ultra / legacy / no model) → the v2 clips endpoint below.
+        if _uses_synthesize(model):
+            return await self._synthesize_tts(req, model)
+
         # For resemble-ultra the body carries the Hebrew text WITH emotion tags
         # (built by the preprocessor). Fall back to plain text when no tagged
         # body was supplied. Ultra niqqud-izes internally — send plain Hebrew.
@@ -147,7 +187,6 @@ class ResembleAdapter(TTSAdapter):
             "precision": req.precision,
         }
 
-        model = req.model or self._default_model
         if model:
             payload["model"] = model
 
@@ -179,6 +218,94 @@ class ResembleAdapter(TTSAdapter):
                 "clip_id": data["item"]["uuid"],
                 "model": model or "default",
                 "body": body,
+            },
+        )
+
+    async def _synthesize_tts(
+        self, req: GenerateRequest, model: str
+    ) -> GenerateResult:
+        """Chatterbox synthesis via the synchronous /synthesize endpoint.
+
+        Differs from the v2 clips path in three ways:
+          * host + auth: POST https://f.cluster.resemble.ai/synthesize with a
+            RAW `Authorization: <key>` header (NOT `Token <key>`).
+          * body: the spoken text goes under `data`, and Chatterbox does NOT
+            support SSML/wrapping tags — so any emotion-tag markup is stripped
+            (strip_tags) before sending; sending raw `<build-intensity>…` would
+            be read out literally.
+          * response: the audio is returned INLINE as base64 `audio_content`,
+            decoded to raw bytes here — there is no URL to download.
+        NOTE: /synthesize does NOT accept a `model` field — the voice itself
+        determines the Chatterbox variant. Sending `model` makes it 401
+        "Token/voice validation failed" (verified live). So `model` is used only
+        to ROUTE here and for logging; it is never put in the request body.
+        """
+        # Chatterbox has no SSML — send clean speech text, never tagged markup.
+        # Both candidates are stripped; we never fall back to raw (tagged) text,
+        # so markup can't leak through and get read aloud literally.
+        data_text = strip_tags(req.tts_body) or strip_tags(req.text)
+        payload: dict = {
+            "voice_uuid": req.voice_id,
+            "data": data_text,
+            "sample_rate": req.sample_rate,
+            "output_format": req.output_format,
+            "precision": req.precision,
+        }
+
+        logger.info(
+            "resemble_synthesize_request",
+            voice_id=req.voice_id,
+            model=model,
+            chars=len(data_text),
+        )
+
+        headers = {
+            "Authorization": self.api_key,
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                response = await client.post(
+                    self._synthesize_url, json=payload, headers=headers
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            self._raise_for_status(e)
+
+        data = response.json()
+        if not data.get("success", True):
+            # /synthesize signals failure in-body (HTTP 200 + success:false)
+            # rather than a status code, so surface the message explicitly.
+            raise ResembleAPIError(
+                f"synthesize failed: {data.get('issues') or data.get('message') or data}"
+            )
+
+        audio_b64 = data.get("audio_content")
+        if not audio_b64:
+            raise ResembleAPIError("synthesize response missing audio_content")
+        audio_bytes = base64.b64decode(audio_b64)
+
+        # /synthesize returns a wav_url-less inline payload; duration is derived
+        # from the sample count when present, else left at 0 (cost follows).
+        duration = float(data.get("duration") or 0.0)
+        cost = duration * self.COST_PER_SECOND
+
+        logger.info(
+            "resemble_synthesize_success",
+            voice_id=req.voice_id,
+            model=model,
+            bytes=len(audio_bytes),
+            duration=duration,
+        )
+
+        return GenerateResult(
+            audio_bytes=audio_bytes,
+            duration_seconds=duration,
+            cost_usd=cost,
+            adapter_metadata={
+                "model": model,
+                "endpoint": "synthesize",
+                "body": data_text,
             },
         )
 

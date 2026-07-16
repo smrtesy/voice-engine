@@ -1,5 +1,6 @@
 """Voice management endpoints."""
 
+import base64
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -273,8 +274,16 @@ async def voice_sample(voice_id: str, request: VoiceSampleRequest) -> dict:
     except Exception as e:
         logger.error("voice_sample_failed", voice_id=voice_id, error=str(e))
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
+    # The clips path returns a downloadable URL; the Chatterbox /synthesize path
+    # returns the audio inline as bytes (audio_url is None). Emit a data: URL in
+    # that case so the preview player always gets a playable src — otherwise the
+    # library preview silently returns audio_url: null on Chatterbox-tier accounts.
+    audio_url = result.audio_url
+    if audio_url is None and result.audio_bytes is not None:
+        b64 = base64.b64encode(result.audio_bytes).decode()
+        audio_url = f"data:audio/wav;base64,{b64}"
     return {
-        "audio_url": result.audio_url,
+        "audio_url": audio_url,
         "duration": result.duration_seconds,
         "cost": result.cost_usd,
     }

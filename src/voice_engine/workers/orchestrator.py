@@ -879,13 +879,19 @@ class JobOrchestrator:
             )
             return {"ok": False, "error": str(e)}
 
-        # Download from Resemble and upload to our storage so signed URLs come from us.
+        # Persist the audio locally, then upload to our storage so signed URLs
+        # come from us. Two shapes: the v2 clips path returns a URL to download
+        # (resemble-ultra/legacy); the /synthesize path (Chatterbox) returns the
+        # bytes inline — write those directly, there is nothing to fetch.
         with TemporaryDirectory() as tmp:
             local_path = Path(tmp) / f"out_{line.line_number:03d}.wav"
-            client = self._get_http_client()
-            response = await client.get(result.audio_url)
-            response.raise_for_status()
-            local_path.write_bytes(response.content)
+            if result.audio_bytes is not None:
+                local_path.write_bytes(result.audio_bytes)
+            else:
+                client = self._get_http_client()
+                response = await client.get(result.audio_url)
+                response.raise_for_status()
+                local_path.write_bytes(response.content)
 
             # Optional post-production: gentle compressor + WSOLA time-stretch
             # + loudness normalization (even level across lines).
