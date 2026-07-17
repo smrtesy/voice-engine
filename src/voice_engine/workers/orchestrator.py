@@ -796,11 +796,14 @@ class JobOrchestrator:
                     # Tag-free spoken text, so smrtesy can diff it against the
                     # line's original to learn which respelling the user kept.
                     text_spoken=line.text_for_tts,
-                    # Multi-voice: every voice is a good, labelled deliverable.
+                    # Multi-voice: every voice is a good, pre-approved deliverable.
                     approved=multi,
-                    voice_label=(r["character"].display_name or r["character"].name)
-                    if multi
-                    else None,
+                    # Attribute EVERY take to its voice (id + human label), not
+                    # just multi-voice ones — so a take is always traceable to the
+                    # voice that made it and re-renders with a different voice are
+                    # distinguishable.
+                    voice_label=r["character"].display_name or r["character"].name,
+                    resemble_voice_id=r["character"].resemble_voice_id,
                 )
 
         await self.webhook.send_line_completed(
