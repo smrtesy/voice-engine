@@ -6,7 +6,10 @@ import json
 import structlog
 
 from voice_engine.config import get_settings
-from voice_engine.dictionaries.emotion_directions import EMOTION_DIRECTIONS
+from voice_engine.dictionaries.emotion_directions import (
+    EMOTION_DIRECTIONS,
+    exaggeration_for_emotion,
+)
 from voice_engine.dictionaries.hebrew_names import HEBREW_NAME_FIXES
 from voice_engine.dictionaries.pronunciations import apply_pronunciations, build_glossary
 from voice_engine.dictionaries.resemble_tags import (
@@ -90,6 +93,7 @@ class LLMPreprocessor:
         context_lines: list[ScriptLine] | None = None,
         pronunciations: dict[str, str] | list[dict] | None = None,
         script_language: str | None = None,
+        emotion_enabled: bool = True,
     ) -> ProcessedLine:
         # The SCRIPT's language selects which lexicon entries apply — not the
         # voice's. A Hebrew voice cast into an English script gets the English
@@ -124,17 +128,21 @@ class LLMPreprocessor:
         # below. The orchestrator's contract is "per-line failures are recorded
         # and the job continues"; raising here broke that and let one dead
         # model / one transient 529 nuke an 85-line run.
+        # emotion_enabled=False (Chatterbox fast path) skips the LLM entirely:
+        # the line renders flat/neutral from the clean text, saving the per-line
+        # LLM spend. Emotion resolution below is also short-circuited to neutral.
         response = None
-        try:
-            response = await self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_message}],
-            )
-        except Exception as e:
-            logger.error("llm_call_failed", line_number=line.line_number, error=str(e))
+        if emotion_enabled:
+            try:
+                response = await self.client.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_message}],
+                )
+            except Exception as e:
+                logger.error("llm_call_failed", line_number=line.line_number, error=str(e))
 
         _fallback_output = {
             "text_for_tts": line.text_clean,
@@ -177,18 +185,22 @@ class LLMPreprocessor:
 
         # The script ALWAYS wins: a recognised stage direction overrides the
         # LLM's emotion. Otherwise use the LLM's emotion (source "llm"), or
-        # neutral with no tags.
-        script_emotion = _emotion_from_directions(line.directions)
-        if script_emotion:
-            emotion = script_emotion
-            emotion_source = "script"
+        # neutral with no tags. When emotion is disabled we force neutral and
+        # ignore stage directions too — the whole point is a flat delivery.
+        if not emotion_enabled:
+            emotion, emotion_source = "neutral", "none"
         else:
-            emotion = (llm_output.get("emotion") or "neutral").strip().lower()
-            emotion_source = (llm_output.get("emotion_source") or "llm").strip().lower()
-            if emotion in ("", "neutral"):
-                emotion, emotion_source = "neutral", "none"
-            elif emotion_source not in ("llm", "none"):
-                emotion_source = "llm"
+            script_emotion = _emotion_from_directions(line.directions)
+            if script_emotion:
+                emotion = script_emotion
+                emotion_source = "script"
+            else:
+                emotion = (llm_output.get("emotion") or "neutral").strip().lower()
+                emotion_source = (llm_output.get("emotion_source") or "llm").strip().lower()
+                if emotion in ("", "neutral"):
+                    emotion, emotion_source = "neutral", "none"
+                elif emotion_source not in ("llm", "none"):
+                    emotion_source = "llm"
 
         # Apply the character's style baseline (register/pace backbone) on top
         # of the emotion recipe, so even neutral lines carry the character's
@@ -224,6 +236,9 @@ class LLMPreprocessor:
             tags=tags,
             tts_body=tts_body,
             pronunciation_subs=pron_subs,
+            # Chatterbox reads emotion off exaggeration (resemble-ultra ignores
+            # it and uses tags). Neutral maps to the flat 0.5 default.
+            final_exaggeration=exaggeration_for_emotion(emotion),
             resemble_prompt=llm_output.get("resemble_prompt"),
         )
 
@@ -234,6 +249,7 @@ class LLMPreprocessor:
         pronunciations: dict[str, str] | list[dict] | None = None,
         progress_cb=None,
         script_language: str | None = None,
+        emotion_enabled: bool = True,
     ) -> list[ProcessedLine]:
         """Preprocess every cast line, running the per-line LLM calls with
         bounded concurrency (``max_concurrent_preprocess``).
@@ -273,7 +289,8 @@ class LLMPreprocessor:
             context = lines[max(0, src_index - 2) : src_index]
             async with semaphore:
                 processed = await self.process_line(
-                    line, character, context, pronunciations, script_language
+                    line, character, context, pronunciations, script_language,
+                    emotion_enabled=emotion_enabled,
                 )
             results[slot] = processed
             # Report progress as each line lands. Do it under a lock with a

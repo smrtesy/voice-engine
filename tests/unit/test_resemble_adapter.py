@@ -330,6 +330,8 @@ async def test_chatterbox_routes_to_synthesize(monkeypatch):
     assert body["voice_uuid"] == "voice-uuid"
     # /synthesize rejects a `model` field (401) — the voice picks the variant.
     assert "model" not in body
+    # Chatterbox's emotion knob is carried through (resemble-ultra ignores it).
+    assert body["exaggeration"] == pytest.approx(0.5)
     # Audio returned inline as bytes; there is no URL to download.
     assert result.audio_bytes == audio
     assert result.audio_url is None
