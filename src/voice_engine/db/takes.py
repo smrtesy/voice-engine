@@ -48,6 +48,7 @@ class LineTakesRepository:
         cost_usd: float | None,
         approved: bool = False,
         voice_label: str | None = None,
+        resemble_voice_id: str | None = None,
         text_spoken: str | None = None,
     ) -> None:
         """Append one take. Best-effort: a failure must never abort a render.
@@ -77,6 +78,12 @@ class LineTakesRepository:
             }
             if voice_label:
                 row["voice_label"] = voice_label
+            # The Resemble voice UUID that produced this take. Recorded on EVERY
+            # take so history is voice-attributable — without it a re-render with
+            # a different voice is indistinguishable from the original (the exact
+            # ambiguity that made a mixed take set impossible to sort out).
+            if resemble_voice_id:
+                row["resemble_voice_id"] = resemble_voice_id
             if text_spoken is not None:
                 row["text_spoken"] = text_spoken
             query = client.table(self.TABLE).insert(row)
