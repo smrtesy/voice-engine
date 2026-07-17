@@ -1,6 +1,7 @@
 """Tests for post-production DSP (compressor + WSOLA)."""
 
 import numpy as np
+
 from voice_engine.audio.postprocess import (
     _follow_envelope,
     _follow_envelope_py,
