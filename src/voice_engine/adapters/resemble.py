@@ -250,6 +250,11 @@ class ResembleAdapter(TTSAdapter):
             "sample_rate": req.sample_rate,
             "output_format": req.output_format,
             "precision": req.precision,
+            # Chatterbox's one emotion knob (resemble-ultra ignores it and uses
+            # SSML tags). The preprocessor derives this from the detected emotion
+            # — neutral == 0.5, emotional lines are pushed higher/lower. Unlike
+            # `model`, /synthesize accepts `exaggeration` (verified live).
+            "exaggeration": req.exaggeration,
         }
 
         logger.info(

@@ -162,6 +162,7 @@ class JobOrchestrator:
             processed_lines = await self.preprocessor.process_batch(
                 lines, characters, pronunciations, progress_cb=_on_preprocess,
                 script_language=request.language,
+                emotion_enabled=request.emotion_enabled,
             )
             for processed in processed_lines:
                 await self.lines_repo.update_llm_data(script_id, processed)
@@ -1063,6 +1064,7 @@ class JobOrchestrator:
                         await self.preprocessor.process_line(
                             src_line, character, None, pronunciations,
                             script_language=request.language,
+                            emotion_enabled=request.emotion_enabled,
                         )
                     )
                     continue

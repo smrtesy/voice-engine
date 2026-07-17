@@ -40,6 +40,14 @@ class CreateJobRequest(BaseModel):
     # Per-org Claude model for preprocessing. None → use LLM_MODEL env default.
     llm_model: str | None = None
 
+    # Emotion processing toggle (per-script, resolved on the smrtesy side).
+    # True (default, preserves legacy) → run the LLM emotion/tone pass and drive
+    # delivery (tags for resemble-ultra, exaggeration for Chatterbox). False →
+    # skip the LLM emotion call entirely: lines render flat/neutral from clean
+    # text, which is both faster and cheaper (no per-line LLM spend). Chatterbox
+    # scripts default this OFF on the smrtesy side; ultra scripts default ON.
+    emotion_enabled: bool = True
+
     characters: list[dict] = []
 
     # Short program code (e.g. "BR1"); output files are "{code}_{line:03d}.wav".

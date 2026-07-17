@@ -149,3 +149,29 @@ EMOTION_DIRECTIONS: dict[str, dict] = {
         "prompt_template": "Speak hesitantly, stammering under stress",
     },
 }
+
+
+# Reverse lookup: resolved emotion label (e.g. "excited", "sad") -> Chatterbox
+# `exaggeration` (0..1). resemble-ultra ignores exaggeration and is driven by
+# SSML tags instead, but Chatterbox has no SSML — exaggeration is its one
+# emotion knob, so this is how a detected emotion actually colors a Chatterbox
+# clip. Built once from EMOTION_DIRECTIONS; the first entry for a label wins.
+# Neutral / unknown -> the model's flat default (0.5).
+_EXAGGERATION_BY_EMOTION: dict[str, float] = {}
+for _entry in EMOTION_DIRECTIONS.values():
+    _label = _entry.get("emotion")
+    if _label and _label not in _EXAGGERATION_BY_EMOTION:
+        _EXAGGERATION_BY_EMOTION[_label] = float(_entry.get("exaggeration", 0.5))
+
+NEUTRAL_EXAGGERATION = 0.5
+
+
+def exaggeration_for_emotion(emotion: str | None) -> float:
+    """Chatterbox exaggeration (0..1) for a resolved emotion label.
+
+    Returns the flat default (0.5) for neutral / unknown emotions, so a
+    neutral line reads plainly and an emotional one is pushed harder.
+    """
+    if not emotion:
+        return NEUTRAL_EXAGGERATION
+    return _EXAGGERATION_BY_EMOTION.get(emotion.strip().lower(), NEUTRAL_EXAGGERATION)
