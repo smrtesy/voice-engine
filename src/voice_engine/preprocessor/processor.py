@@ -104,9 +104,6 @@ class LLMPreprocessor:
         system_prompt = build_system_prompt(
             character_name=character.name,
             character_description=character.description or "",
-            context_lines=[
-                f"{cl.speaker_name}: {cl.text_clean}" for cl in (context_lines or [])
-            ],
             name_dictionary=HEBREW_NAME_FIXES,
             emotion_dictionary=EMOTION_DIRECTIONS,
             # Hand the org glossary to the model so it can apply pronunciation
@@ -121,7 +118,17 @@ class LLMPreprocessor:
             # not come back Hebrew.
             script_language=pron_language,
         )
-        user_message = build_user_message(line.text_clean, line.directions)
+        # The scene context rides in the user message, not the system prompt: it
+        # changes on every line, and in the system prompt it sat ahead of the
+        # glossary / emotion list / output contract and voided the cache for all
+        # of them. See prompts.py's module docstring.
+        user_message = build_user_message(
+            line.text_clean,
+            line.directions,
+            context_lines=[
+                f"{cl.speaker_name}: {cl.text_clean}" for cl in (context_lines or [])
+            ],
+        )
 
         # A single line's LLM call must never abort the whole job. On any API
         # failure we fall back to the raw cleaned text (no niqqud, no LLM
@@ -135,11 +142,26 @@ class LLMPreprocessor:
         response = None
         if emotion_enabled:
             try:
+                # Cache the system prefix. It is identical for every line of a
+                # given character, so a scene's first line writes it and the rest
+                # read it at 0.1x instead of re-paying full price per line. The
+                # 1h TTL (vs the 5-minute default) outlives a slow batch and the
+                # gaps between jobs; the write premium is paid once per character.
+                # Prefixes under the model's minimum (1024 tokens on Sonnet, 4096
+                # on Haiku) are silently ignored and simply bill as normal input —
+                # the block is measured at ~1.1-1.4k tokens, so it clears Sonnet's
+                # bar. Do NOT let per-line text into this block; see prompts.py.
                 response = await self.client.messages.create(
                     model=self.model,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
-                    system=system_prompt,
+                    system=[
+                        {
+                            "type": "text",
+                            "text": system_prompt,
+                            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                        }
+                    ],
                     messages=[{"role": "user", "content": user_message}],
                 )
             except Exception as e:

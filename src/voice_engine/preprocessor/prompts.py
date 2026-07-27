@@ -1,4 +1,19 @@
-"""System prompts for the LLM preprocessor (resemble-ultra recipe)."""
+"""System prompts for the LLM preprocessor (resemble-ultra recipe).
+
+PROMPT-CACHE LAYOUT — read before moving anything between the two builders.
+Everything in SYSTEM_PROMPT_TEMPLATE is invariant for a given (character,
+script language): the persona, the hard rules, the pronunciation glossary, the
+emotion list, the name fixes, the output contract. processor.py sends it as one
+`cache_control` system block, so a scene's second and later lines read that
+prefix at 0.1x instead of paying full price for it again.
+
+A cached prefix only hits when it is byte-identical, so the ONE volatile part —
+the rolling "previous lines" context, which changes on every single line — lives
+in the user message (build_user_message), never here. It used to sit ~16% into
+this template, which left the other 83% downstream of a string that never
+repeated: nothing could cache, no matter what cache_control said. Anything else
+that starts varying per line must go to the user message for the same reason.
+"""
 
 SYSTEM_PROMPT_TEMPLATE = """You are a professional script preprocessor for a children's TV studio.
 The synthesis engine is Resemble **resemble-ultra**.
@@ -16,9 +31,6 @@ Let this persona guide the emotion you pick and how strongly: a reserved,
 dignified character rarely spikes to "excited"; an energetic child leans
 bright and animated. Choose emotions that fit THIS character, not a generic
 reading. This shapes delivery — it does not change the words.
-
-## Recent context (previous lines)
-{context_lines}
 
 ## Hard rules for resemble-ultra
 1. {output_language_rule}
@@ -97,14 +109,17 @@ def _language_name(script_language: str | None) -> str:
 def build_system_prompt(
     character_name: str,
     character_description: str,
-    context_lines: list[str],
     name_dictionary: dict[str, str],
     emotion_dictionary: dict[str, dict],
     pronunciation_glossary: str = "",
     character_persona: str = "",
     script_language: str | None = None,
 ) -> str:
-    context_str = "\n".join(context_lines) if context_lines else "(start of scene)"
+    """Build the cacheable prefix — invariant per (character, script language).
+
+    The per-line scene context is deliberately NOT a parameter here; it goes to
+    build_user_message. See the module docstring.
+    """
     names_str = "\n".join(f"  - {k} -> {v}" for k, v in name_dictionary.items())
     emotions_str = "\n".join(
         f"  - '{k}' -> {v['emotion']}" for k, v in emotion_dictionary.items()
@@ -116,7 +131,6 @@ def build_system_prompt(
         character_name=character_name,
         character_description=character_description,
         character_persona=persona_str,
-        context_lines=context_str,
         name_dictionary=names_str,
         emotion_dictionary=emotions_str,
         pronunciation_glossary=glossary_str,
@@ -125,9 +139,22 @@ def build_system_prompt(
     )
 
 
-def build_user_message(line_text: str, directions: list[str]) -> str:
+def build_user_message(
+    line_text: str,
+    directions: list[str],
+    context_lines: list[str] | None = None,
+) -> str:
+    """Build the per-line message: the rolling scene context plus this line.
+
+    The context leads so the model reads what came before, then the line to
+    process. It lives here rather than in the system prompt because it changes
+    on every line and would otherwise void the cached prefix (module docstring).
+    """
     directions_str = ", ".join(directions) if directions else "(none)"
+    context_str = "\n".join(context_lines) if context_lines else "(start of scene)"
     return (
+        f"## Recent context (previous lines)\n"
+        f"{context_str}\n\n"
         f"Process this line:\n\n"
         f"Stage directions: {directions_str}\n"
         f"Text: {line_text}"
