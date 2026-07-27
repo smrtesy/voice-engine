@@ -35,7 +35,14 @@ supabase = "^2.4.0"
 postgrest = "^0.16.0"
 
 # LLM
-anthropic = "^0.20.0"
+# 0.120.0, not the old ^0.20.0: the preprocessor now sends its system prefix as a
+# cache_control block with a 1h TTL. `cache_control` on a text block did not exist
+# in the SDK until ~0.34 and the `ttl` field arrived later still, and 0.20.x typed
+# `system` as a bare str — so on the old pin the cached call would neither
+# type-check nor cache. The call surface we use (AsyncAnthropic, messages.create
+# with model/max_tokens/temperature/system/messages, response.content[0].text) is
+# unchanged across the jump, and 0.120.0 resolves cleanly next to supabase 2.x.
+anthropic = "^0.120.0"
 
 # Google APIs
 google-api-python-client = "^2.120.0"
