@@ -181,3 +181,64 @@ def test_bold_italic_direction_line_dropped_not_spoken() -> None:
     assert [ln.speaker_name for ln in lines] == ["Sammy", "Yudi"]
     assert "robotic machine" not in lines[0].text_clean
     assert lines[0].text_clean == "Look at this!"
+
+
+# ─── NM112 regressions ───────────────────────────────────────────────────────
+
+
+def test_bold_italic_dialogue_body_is_spoken_not_dropped() -> None:
+    # NM112 Scene 5: the spoken text of a numbered dialogue line was itself
+    # bold-italic (***…***). _extract_directions consumed it as a direction,
+    # the line went empty and was dropped — Lilly's line vanished. A dialogue
+    # line whose whole body is emphasized must survive as speech.
+    text = (
+        "125. **Rebbetzin Meshinsky:** Good Shabbos.\n"
+        "126. **Jack:** ***Oh man! The power went out!!***\n"
+        "127. **Mrs Mendelson:** ***Everyone! Away from the windows!!***\n"
+        "128. **Lilly:** ***That came from next door!***\n"
+        "129. **Mr Mendelson:** ***A tree! It landed on the Bernard home!!***"
+    )
+    lines, _ = parse_script(text)
+
+    by_num = {ln.line_number: ln for ln in lines}
+    assert set(by_num) == {125, 126, 127, 128, 129}
+    assert by_num[128].speaker_name == "Lilly"
+    assert by_num[128].text_clean == "That came from next door!"
+    assert "*" not in by_num[128].text_clean
+    assert by_num[126].text_clean == "Oh man! The power went out!!"
+
+
+def test_dialogue_line_that_is_only_a_parenthetical_still_drops() -> None:
+    # The recovery must NOT resurrect a line whose only content is a stage
+    # direction in parentheses (no actual speech).
+    text = "5. **Sammy:** *(shrugs silently)*"
+    lines, _ = parse_script(text)
+
+    assert lines == [] or all("shrug" not in ln.text_clean for ln in lines)
+
+
+def test_numbered_answer_without_speaker_does_not_pollute_previous() -> None:
+    # NM112 Episode Question: the quiz answers are numbered ordered-list items
+    # with no colon/speaker. They must be dropped, not appended to the dialogue
+    # line above them (the "Alarm clock" line that swallowed the answers).
+    text = (
+        "151. **Alarm clock:** Remind Brillin!\n"
+        "152. How to wash the hands of Kohanim properly\n"
+        "153. That people with the same name should always get along\n"
+        "157. **Shifra:** Fill in your answer at the end."
+    )
+    lines, _ = parse_script(text)
+
+    assert [ln.speaker_name for ln in lines] == ["Alarm clock", "Shifra"]
+    assert lines[0].text_clean == "Remind Brillin!"
+    assert not any("How to wash" in ln.text_clean for ln in lines)
+
+
+def test_question_and_answer_label_is_not_a_speaker() -> None:
+    # The top-of-doc "Question and Answer:" metadata label must never become a
+    # castable character (it did in NM112, as line 1).
+    lines, _ = parse_script(
+        "**Question and Answer:** What can we learn from Rabbi Levi Yitzchak?"
+    )
+
+    assert all(ln.speaker_name != "Question and Answer" for ln in lines)
