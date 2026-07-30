@@ -83,6 +83,46 @@ def test_plain_paragraphs_still_extracted_without_lists_map() -> None:
     assert _client()._extract_text(content, {}) == "hello world"
 
 
+def test_adjacent_styled_runs_keep_their_spaces() -> None:
+    # NM112: "Mrs Mendelson " / "and " / "Mr Mendelson" were three bold runs.
+    # Stripping each run glued them into "Mrs Mendelsonandmr Mendelson". The
+    # inter-run whitespace must survive so the speaker reads correctly.
+    content = [
+        _para(
+            [
+                _run("Mrs Mendelson ", bold=True),
+                _run("and ", bold=True),
+                _run("Mr Mendelson", bold=True),
+                _run(": You're Jewish?"),
+            ],
+            bullet=ORDERED,
+        )
+    ]
+    text = _client()._extract_text(content, LISTS)
+
+    assert "Mrs Mendelson and Mr Mendelson" in text.replace("*", "")
+    lines, _ = parse_script(text)
+    assert lines[0].speaker_name == "Mrs Mendelson and Mr Mendelson"
+
+
+def test_bold_italic_run_is_spoken_after_extraction() -> None:
+    # End-to-end of the Scene-5 bug: a bold+italic body run (***…***) produced
+    # by google_docs must still be spoken once parsed, not dropped.
+    content = [
+        _para(
+            [_run("Lilly", bold=True), _run(": ", bold=True),
+             _run("That came from next door!", bold=True, italic=True)],
+            bullet=ORDERED,
+        )
+    ]
+    text = _client()._extract_text(content, LISTS)
+    lines, _ = parse_script(text)
+
+    assert len(lines) == 1
+    assert lines[0].speaker_name == "Lilly"
+    assert lines[0].text_clean == "That came from next door!"
+
+
 def _tab(title: str, tab_id: str = "") -> dict:
     return {"tabProperties": {"title": title, "tabId": tab_id or title}}
 
