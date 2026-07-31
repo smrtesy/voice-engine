@@ -147,6 +147,12 @@ class MinimaxAdapter(TTSAdapter):
         Uses the status_url/response_url returned by the submit response (the
         queue rewrites subpath endpoints to a shared app URL — constructing the
         poll URLs by hand breaks for `fal-ai/minimax/...` subpaths).
+
+        Billing safety: every fal submit is a PAID call, so the submit runs
+        exactly ONCE — there is deliberately no retry that could re-submit
+        after a successful (billed) submission. Transient poll/download blips
+        are absorbed by retrying the polling GETs in place against the same
+        request_id instead.
         """
         self._require_key()
         try:
@@ -162,19 +168,36 @@ class MinimaxAdapter(TTSAdapter):
 
         elapsed = 0.0
         interval = self._poll_interval
+        poll_failures = 0
         while True:
-            status_resp = await self.client.get(status_url)
-            # A failed request can surface as a non-200 on the status poll.
-            if status_resp.status_code >= 400:
-                raise FalAPIError(
-                    f"fal status poll failed ({status_resp.status_code}): "
-                    f"{status_resp.text[:500]}"
-                )
-            state = status_resp.json().get("status")
-            if state == "COMPLETED":
-                break
-            if state not in ("IN_QUEUE", "IN_PROGRESS"):
-                raise FalAPIError(f"fal request ended in state {state!r}")
+            try:
+                status_resp = await self.client.get(status_url)
+            except httpx.HTTPError as e:
+                # Network blip mid-poll: keep polling the SAME request rather
+                # than failing (and possibly re-submitting a billed call).
+                poll_failures += 1
+                if poll_failures > 5:
+                    raise FalAPIError(
+                        f"fal status poll kept failing ({endpoint_id}, "
+                        f"request_id={ticket.get('request_id')}): {e}"
+                    ) from e
+                status_resp = None
+            if status_resp is not None:
+                # A failed request can surface as a non-200 on the status poll.
+                if status_resp.status_code >= 400:
+                    poll_failures += 1
+                    if poll_failures > 5:
+                        raise FalAPIError(
+                            f"fal status poll failed ({status_resp.status_code}): "
+                            f"{status_resp.text[:500]}"
+                        )
+                else:
+                    poll_failures = 0
+                    state = status_resp.json().get("status")
+                    if state == "COMPLETED":
+                        break
+                    if state not in ("IN_QUEUE", "IN_PROGRESS"):
+                        raise FalAPIError(f"fal request ended in state {state!r}")
             if elapsed >= self._poll_timeout:
                 raise FalAPIError(
                     f"fal request timed out after {self._poll_timeout}s "
@@ -191,13 +214,21 @@ class MinimaxAdapter(TTSAdapter):
             self._raise_for_status(e)
         return result.json()
 
-    # ------------------------------------------------------------------ tts
-
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=30),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
+    async def _download(self, url: str) -> bytes:
+        """Fetch a produced audio file. Safe to retry — the synthesis is
+        already billed; this only re-reads its result."""
+        resp = await self.client.get(url)
+        if resp.status_code >= 400:
+            raise FalAPIError(f"minimax audio download failed ({resp.status_code})")
+        return resp.content
+
+    # ------------------------------------------------------------------ tts
+
     async def generate_tts(self, req: GenerateRequest) -> GenerateResult:
         model, endpoint_id = resolve_endpoint(req.model)
         # MiniMax has no SSML — Resemble tag markup would be read out loud.
@@ -237,12 +268,9 @@ class MinimaxAdapter(TTSAdapter):
         # Download and convert to WAV here: the orchestrator writes
         # audio_bytes straight to a .wav file and post-processes it, so the
         # adapter must hand over real WAV bytes (the download is FLAC).
-        download = await self.client.get(audio_url)
-        if download.status_code >= 400:
-            raise FalAPIError(
-                f"minimax audio download failed ({download.status_code})"
-            )
-        wav_bytes = _to_wav(download.content)
+        # The download is retried IN PLACE (same already-billed result URL) —
+        # never by re-running the paid synthesis.
+        wav_bytes = _to_wav(await self._download(audio_url))
 
         duration = float(data.get("duration_ms") or 0.0) / 1000.0
         cost = tts_cost_usd(model, len(text))
