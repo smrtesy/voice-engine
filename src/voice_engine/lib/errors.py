@@ -25,6 +25,22 @@ class ResembleVoiceNotFoundError(ResembleError):
     """404 - voice_id doesn't exist."""
 
 
+class FalError(VoiceEngineError):
+    """Base for fal.ai-related errors (MiniMax adapter)."""
+
+
+class FalAPIError(FalError):
+    """General fal API error."""
+
+
+class FalRateLimitError(FalError):
+    """429 - too many requests."""
+
+
+class FalAuthError(FalError):
+    """401/403 - authentication issue (missing/invalid FAL_KEY)."""
+
+
 class LLMError(VoiceEngineError):
     """Base for LLM-related errors."""
 

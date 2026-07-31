@@ -18,6 +18,10 @@ class GenerateRequest:
     # emotion tags already injected (e.g. "<build-intensity>שלום</build-intensity>").
     # When None the adapter falls back to `text`. See dictionaries/resemble_tags.py.
     tts_body: str | None = None
+    # The preprocessor's emotion label for the line (e.g. "excited"). Ultra
+    # ignores it (emotion rides in tts_body tags); the MiniMax adapter maps it
+    # onto voice_setting.emotion. None → neutral.
+    emotion: str | None = None
     # Emotion tags applied, each {tag, type: wrap|inline, source: script|llm}.
     # Carried for transparency/logging only — the body already embeds them.
     tags: list[dict] = field(default_factory=list)

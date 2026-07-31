@@ -47,6 +47,7 @@ from voice_engine.dictionaries.resemble_tags import (
     tags_for_emotion,
 )
 from voice_engine.models.domain import (
+    AdapterType,
     Character,
     JobResult,
     ProcessedLine,
@@ -84,11 +85,24 @@ class JobOrchestrator:
         # every rendered clip, closed when the generation pipeline finishes)
         # instead of a fresh httpx.AsyncClient per clip.
         self._http_client: httpx.AsyncClient | None = None
+        # Lazy per-job MiniMax adapter: a character/casting whose model is
+        # "minimax-*" renders through fal instead of the job's default adapter,
+        # so one script can mix Resemble and MiniMax voices line by line.
+        self._minimax_adapter = None
 
     def _get_http_client(self) -> httpx.AsyncClient:
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(timeout=300.0)
         return self._http_client
+
+    def _adapter_for_model(self, model: str | None, default_adapter):
+        """Route a clip by its resolved model: "minimax-*" → the (lazy, per-job)
+        MiniMax adapter; anything else → the job's default adapter."""
+        if model and model.strip().lower().startswith("minimax"):
+            if self._minimax_adapter is None:
+                self._minimax_adapter = get_adapter(AdapterType.MINIMAX, shared=False)
+            return self._minimax_adapter
+        return default_adapter
 
     async def process_job(
         self, job_id: UUID, request: CreateJobRequest
@@ -616,6 +630,9 @@ class JobOrchestrator:
         finally:
             # Close the per-job HTTP clients (adapter + clip downloads) cleanly.
             await adapter.close()
+            if self._minimax_adapter is not None:
+                await self._minimax_adapter.close()
+                self._minimax_adapter = None
             if self._http_client is not None and not self._http_client.is_closed:
                 await self._http_client.aclose()
 
@@ -845,17 +862,21 @@ class JobOrchestrator:
         adapter,
         script_id,
     ) -> dict:
-        """Render ONE clip for ONE voice: call Resemble, download, post-process,
-        and upload to our storage (unique path). Returns {"ok": True, ...render
-        fields} on success, or {"ok": False, "error": <msg>} when the adapter
-        call fails — so the line's other voices can still succeed and the real
-        error can be surfaced on the line."""
+        """Render ONE clip for ONE voice: call the TTS provider, download,
+        post-process, and upload to our storage (unique path). Returns
+        {"ok": True, ...render fields} on success, or {"ok": False, "error":
+        <msg>} when the adapter call fails — so the line's other voices can
+        still succeed and the real error can be surfaced on the line."""
         # Model precedence: per-character model → engine env default → Resemble's.
         resolved_model = character.resemble_model or self.settings.resemble_default_model or None
+        # A "minimax-*" model routes this clip to the MiniMax adapter (fal);
+        # anything else stays on the job's default adapter (Resemble).
+        adapter = self._adapter_for_model(resolved_model, adapter)
         gen_req = GenerateRequest(
             text=line.text_for_tts,
             tts_body=body or line.text_for_tts,
             tags=tags or [],
+            emotion=line.emotion,
             voice_id=character.resemble_voice_id,
             language=character.language,
             input_audio_url=input_audio_url,

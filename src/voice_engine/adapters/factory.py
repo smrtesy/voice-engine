@@ -2,6 +2,7 @@
 
 from voice_engine.adapters.base import TTSAdapter
 from voice_engine.adapters.chatterbox import ChatterboxAdapter
+from voice_engine.adapters.minimax import MinimaxAdapter
 from voice_engine.adapters.resemble import ResembleAdapter
 from voice_engine.config import get_settings
 from voice_engine.models.domain import AdapterType
@@ -35,6 +36,8 @@ def get_adapter(
         adapter = ResembleAdapter()
     elif adapter_type in (AdapterType.CHATTERBOX_LOCAL, AdapterType.CHATTERBOX_RUNPOD):
         adapter = ChatterboxAdapter()
+    elif adapter_type == AdapterType.MINIMAX:
+        adapter = MinimaxAdapter()
     else:
         raise ValueError(f"Unknown adapter type: {adapter_type}")
 

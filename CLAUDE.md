@@ -25,7 +25,7 @@ webhook חוזר ל-smrtesy‏ (`/api/voice/webhook`).
 | `main.py`, `config.py` | כניסת ה-FastAPI + קונפיג מ-env |
 | `api/` | הראוטים: `jobs.py`, `parse.py`, `voices.py`, `health.py`; אימות ב-`auth.py` |
 | `workers/` | `huey_app.py` (התור), `tasks.py`, `orchestrator.py` — העיבוד בפועל |
-| `adapters/` | ספקי קול מתחלפים: `resemble.py` (פרודקשן), `chatterbox.py` (עתידי), `factory.py`, חוזה משותף ב-`base.py` |
+| `adapters/` | ספקי קול מתחלפים: `resemble.py` (פרודקשן), `minimax.py` (‏fal, שיבוט חד-פעמי בלי דמי-חודש; מודל `minimax-*` מנתב אליו), `chatterbox.py` (עתידי), `factory.py`, חוזה משותף ב-`base.py` |
 | `preprocessor/` | עיבוד טקסט לפני TTS — **קורא ל-Anthropic API בתשלום** (`llm_client.py`, `prompts.py`, `processor.py`, `fidelity.py`) |
 | `parsers/` | פירוק תסריטים: `script.py`, `google_docs.py`, `directions.py` |
 | `dictionaries/` | הגייה: `hebrew_names.py`, `chabad_pronunciation.py`, `pronunciations.py`, `resemble_tags.py`, `emotion_directions.py` |

@@ -13,6 +13,7 @@ from voice_engine.adapters.base import GenerateRequest
 from voice_engine.adapters.factory import get_adapter
 from voice_engine.api.auth import verify_api_key
 from voice_engine.config import get_settings
+from voice_engine.models.domain import AdapterType
 from voice_engine.models.requests import CreateVoiceRequest, VoiceSampleRequest
 from voice_engine.models.responses import VoiceCreatedResponse
 from voice_engine.storage.storage_manager import StorageManager
@@ -161,8 +162,16 @@ async def clone_voice(request: CreateVoiceRequest) -> VoiceCreatedResponse:
          a. POST /voices (creates voice record)
          b. POST /voices/{uuid}/recordings (multipart upload)
       3. Return the voice_id
+
+    provider="minimax" clones through fal instead (one queue call, ready on
+    return — no training poll, no monthly fee). Both providers clone from the
+    same normalized dataset built below.
     """
-    adapter = get_adapter()
+    adapter = (
+        get_adapter(AdapterType.MINIMAX)
+        if request.provider == "minimax"
+        else get_adapter()
+    )
     storage = StorageManager()
 
     # Accept one URL (the usual case, e.g. recording 2) or many parts.
@@ -210,13 +219,14 @@ async def clone_voice(request: CreateVoiceRequest) -> VoiceCreatedResponse:
     # Resemble webhook for training completion. The "training" return value
     # is a hint, not a live status — once we add polling or webhook handling,
     # update this comment.
-    # Clones are created rapid then upgraded to resemble-ultra (async, ~minutes).
-    # Report "training" — the caller polls GET /voices/{uuid}/status for readiness.
+    # Resemble clones are created rapid then upgraded to resemble-ultra (async,
+    # ~minutes) — report "training" and the caller polls GET /voices/{uuid}/status.
+    # A MiniMax clone returns only after fal finished — it is ready right away.
     _bust_voice_cache()  # a new voice was created
     return VoiceCreatedResponse(
         voice_id=voice_id,
         voice_uuid=voice_id,
-        status="training",
+        status="ready" if request.provider == "minimax" else "training",
     )
 
 
@@ -256,9 +266,13 @@ async def account_info(refresh: bool = False) -> dict:
 
 @router.post("/{voice_id}/sample")
 async def voice_sample(voice_id: str, request: VoiceSampleRequest) -> dict:
-    """Synthesize a short preview clip with a voice (for the voice library)."""
-    adapter = get_adapter()
+    """Synthesize a short preview clip with a voice (for the voice library).
+
+    A "minimax-*" model routes the preview through the MiniMax adapter (the
+    voice_id is then a MiniMax custom_voice_id, not a Resemble uuid)."""
     settings = get_settings()
+    is_minimax = bool(request.model) and request.model.strip().lower().startswith("minimax")
+    adapter = get_adapter(AdapterType.MINIMAX) if is_minimax else get_adapter()
     gen = GenerateRequest(
         text=request.text,
         tts_body=request.text,
