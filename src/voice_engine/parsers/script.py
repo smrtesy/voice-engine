@@ -36,6 +36,13 @@ logger = structlog.get_logger()
 # "**Scene 1**") — leading emphasis stars are tolerated.
 SCENE_PATTERN: Pattern = re.compile(r"^\**\s*(?:סצנה|scene)\b.*$", re.IGNORECASE)
 NUMBERED_LINE_PATTERN: Pattern = re.compile(r"^\s*(\d+)\s*[.).]\s*([^:：]+)\s*[:：]\s*(.+)$")
+# A re-numbered ordered-list item that carries NO colon → it has no speaker, so
+# it is not dialogue: a multiple-choice answer / checklist bullet from the studio
+# template (google_docs numbers every ordered-list item, dialogue or not). These
+# must be dropped, never appended to the previous spoken line as a continuation
+# — otherwise the Q&A answers get glued onto the line above them (the NM112
+# "Alarm clock" line that swallowed the four quiz answers, lines 152-156).
+NUMBERED_NO_SPEAKER_PATTERN: Pattern = re.compile(r"^\s*\d+\s*[.)]\s+\S")
 # Legacy markup
 SCENE_TITLE_PATTERN: Pattern = re.compile(r"^---\[\s*(.+?)\s*\]---$")
 COMBINED_SPEAKERS_PATTERN: Pattern = re.compile(r"\*\*(.+?)\s+ו(.+?)\*\*:")
@@ -88,6 +95,7 @@ NON_SPEAKER_LABELS: frozenset[str] = frozenset(
         "segment",
         "narration",
         "points",
+        "question and answer",
         "main writer",
         "dp",
         "rg",
@@ -137,6 +145,14 @@ class ScriptParser:
                 speaker = self._clean_speaker(num_match.group(2))
                 text_part = num_match.group(3).strip()
                 self._add_line(speaker, text_part, explicit_number=number)
+                continue
+
+            # A numbered ordered-list item with NO colon has no speaker — it's a
+            # quiz answer / checklist bullet, not dialogue. Drop it (don't let it
+            # fall through to _append_continuation and pollute the line above).
+            if NUMBERED_NO_SPEAKER_PATTERN.match(stripped) and not any(
+                c in stripped for c in (":", "：")
+            ):
                 continue
 
             # Legacy markup
@@ -234,6 +250,19 @@ class ScriptParser:
         text = re.sub(r"\s+", " ", text).strip()
         return text, directions
 
+    @staticmethod
+    def _recover_emphasized_speech(text: str) -> str:
+        """Speech left after dropping parentheticals and emphasis markers.
+
+        Used only when `_extract_directions` emptied a dialogue line: if the
+        remainder (parentheses removed, `*` markers stripped) still has words,
+        that text was emphasized speech — return it so the line survives. A line
+        whose only content was a parenthetical returns "" and stays dropped.
+        """
+        t = PAREN_PATTERN.sub("", text)
+        t = t.replace("*", " ")
+        return re.sub(r"\s+", " ", t).strip()
+
     def _add_line(
         self,
         speaker: str,
@@ -247,6 +276,18 @@ class ScriptParser:
         else:
             self.fallback_counter = (self.lines[-1].line_number if self.lines else 0) + 1
             line_number = self.fallback_counter
+
+        if not text_clean:
+            # The whole utterance was consumed as "directions". For a dialogue
+            # line (we always have a speaker here) emphasis wrapping the entire
+            # text is emphasized SPEECH, not a stage direction — recover it
+            # instead of dropping the line. This is the NM112 Scene-5 bug: the
+            # Lilly/Jack/Mrs-Mendelson lines were bold-italic (***…***) and
+            # vanished. Parentheticals are genuine directions, so a line that is
+            # ONLY "(…)" recovers to nothing and still drops.
+            recovered = self._recover_emphasized_speech(text)
+            if recovered:
+                text_clean, directions = recovered, []
 
         if not text_clean:
             self.warnings.append(

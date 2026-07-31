@@ -214,10 +214,21 @@ class GoogleDocsClient:
             content = text_run.get("content", "")
             style = text_run.get("textStyle", {})
 
-            if style.get("bold"):
-                content = f"**{content.strip()}**"
-            if style.get("italic"):
-                content = f"*{content.strip()}*"
+            # Wrap the run's text in emphasis markers, but keep any surrounding
+            # whitespace OUTSIDE the markers (collapsed to a single space) so
+            # adjacent styled runs don't glue together. A run like "Mrs Mendelson "
+            # + "and " + "Mr Mendelson" (each bold) used to strip to
+            # "**Mrs Mendelson****and****Mr Mendelson**" → "Mrs Mendelsonandmr…";
+            # now the inter-run spaces survive.
+            inner = content.strip()
+            if inner and (style.get("bold") or style.get("italic")):
+                lead = " " if content[:1].isspace() else ""
+                trail = " " if content[-1:].isspace() else ""
+                if style.get("bold"):
+                    inner = f"**{inner}**"
+                if style.get("italic"):
+                    inner = f"*{inner}*"
+                content = f"{lead}{inner}{trail}"
 
             out.append(content)
         text = "".join(out).strip()
