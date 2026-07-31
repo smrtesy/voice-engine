@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     # spread across the parts. Raise if your account/plan allows more.
     resemble_clone_max_seconds: float = 180.0
 
+    # fal.ai — serves the MiniMax voices (TTS + one-time voice cloning, no
+    # per-voice monthly fee). Empty = the MiniMax adapter errors on first use;
+    # every Resemble path is unaffected.
+    fal_key: str = ""
+    fal_queue_base_url: str = "https://queue.fal.run"
+    fal_poll_interval_seconds: float = 1.0
+    fal_poll_timeout_seconds: float = 600.0
+
     # Anthropic
     anthropic_api_key: str
     # claude-sonnet-4-20250514 was retired; the account now serves the 4.x line

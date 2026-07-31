@@ -129,6 +129,10 @@ class CreateVoiceRequest(BaseModel):
     # Clones are always created rapid then upgraded to Ultra (the only path
     # Resemble accepts); this field is kept for compatibility.
     voice_type: Literal["rapid", "pro"] = "rapid"
+    # Which provider clones the voice. "resemble" (default): rapid→ultra, voice
+    # bills $2/mo while it exists. "minimax": one-time $1.50 fal call, no
+    # monthly fee, voice is ready the moment the call returns.
+    provider: Literal["resemble", "minimax"] = "resemble"
     language: str = "he"
     # Gently clean the recordings before cloning (high-pass + silence trim +
     # loudness normalize). False sends the raw audio — e.g. to A/B a raw clone
