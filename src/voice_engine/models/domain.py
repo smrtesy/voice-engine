@@ -39,6 +39,7 @@ class AdapterType(str, Enum):
     RESEMBLE = "resemble"
     CHATTERBOX_LOCAL = "chatterbox_local"
     CHATTERBOX_RUNPOD = "chatterbox_runpod"
+    MINIMAX = "minimax"
 
 
 class Character(BaseModel):
