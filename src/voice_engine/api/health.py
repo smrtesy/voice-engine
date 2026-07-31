@@ -44,5 +44,11 @@ async def health_check() -> HealthResponse:
         timestamp=datetime.now(UTC),
         redis=redis_status,  # type: ignore[arg-type]
         database=db_status,  # type: ignore[arg-type]
-        adapters={"resemble": True, "chatterbox": False},
+        adapters={
+            "resemble": bool(settings.resemble_api_key),
+            "chatterbox": False,
+            # True once FAL_KEY is set on the service — the deploy-verify
+            # signal for the MiniMax rollout.
+            "minimax": bool(settings.fal_key),
+        },
     )
