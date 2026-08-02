@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from voice_engine.adapters.base import GenerateResult
 from voice_engine.api import voices as voices_mod
 from voice_engine.models.requests import VoiceSampleRequest

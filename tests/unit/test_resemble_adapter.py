@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
-
 from voice_engine.adapters import resemble as resemble_mod
 from voice_engine.adapters.base import GenerateRequest
 from voice_engine.adapters.resemble import ResembleAdapter

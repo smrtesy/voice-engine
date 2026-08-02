@@ -8,7 +8,6 @@ pytest.importorskip("pydub")
 
 from pydub import AudioSegment  # noqa: E402
 from pydub.generators import Sine  # noqa: E402
-
 from voice_engine.api.voices import _clean_segment, _normalize_loudness  # noqa: E402
 
 
